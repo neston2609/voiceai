@@ -54,4 +54,15 @@ if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet nginx; th
   sudo systemctl reload nginx
 fi
 
+for attempt in {1..30}; do
+  if curl -fsS http://127.0.0.1:3001/api/system/health >/dev/null 2>&1; then
+    break
+  fi
+  if [[ "$attempt" == "30" ]]; then
+    echo "$LOG_PREFIX backend health check failed after restart" >&2
+    exit 1
+  fi
+  sleep 1
+done
+
 echo "$LOG_PREFIX deployed ${REMOTE_SHA:0:7}"
