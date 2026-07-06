@@ -70,6 +70,28 @@ export interface DialogflowConfig {
   updatedAt: string;
 }
 
+export interface TelephonyConnection {
+  id: string;
+  organizationId: string;
+  name: string;
+  type: "ARI" | "SIP";
+  host: string;
+  port: number;
+  transport: "UDP" | "TCP" | "TLS" | "WS" | "WSS";
+  ariUrl?: string;
+  username: string;
+  encryptedPassword?: string;
+  extension: string;
+  appName?: string;
+  flowId?: string;
+  isActive: boolean;
+  status: "not-tested" | "configured" | "connected" | "registered" | "registration-failed" | "connection-failed";
+  lastRegistrationMessage?: string;
+  registeredAt?: string;
+  updatedAt: string;
+  createdAt: string;
+}
+
 export interface PromptTemplate {
   id: string;
   organizationId: string;
@@ -79,6 +101,28 @@ export interface PromptTemplate {
   language: string;
   version: number;
   isActive: boolean;
+  knowledgeBaseIds?: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface KnowledgeChunk {
+  id: string;
+  text: string;
+  sourceRef?: string;
+  createdAt: string;
+}
+
+export interface KnowledgeBase {
+  id: string;
+  organizationId: string;
+  name: string;
+  description?: string;
+  sourceType: "TEXT" | "FILE" | "DATABASE" | "WEBSITE";
+  sourceConfig: Record<string, unknown>;
+  chunks: KnowledgeChunk[];
+  status: "empty" | "ready" | "failed";
+  errorMessage?: string;
   createdAt: string;
   updatedAt: string;
 }

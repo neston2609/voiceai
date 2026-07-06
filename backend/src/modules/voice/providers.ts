@@ -13,6 +13,7 @@ export interface VoiceProvider {
     text: string;
     languageCode: string;
     voiceName?: string;
+    audioEncoding?: "MP3" | "LINEAR16";
   }): Promise<{ audioBuffer: Buffer; audioFormat: string; rawResponse: unknown }>;
   detectIntent(input: {
     text?: string;
@@ -33,7 +34,7 @@ export class MockVoiceProvider implements VoiceProvider {
     return { text: "ต้องการตรวจสอบสถานะรายการ", confidence: 0.71, rawResponse: { provider: "mock-stt" } };
   }
 
-  async synthesizeSpeech(input: { text: string; languageCode: string; voiceName?: string }): ReturnType<VoiceProvider["synthesizeSpeech"]> {
+  async synthesizeSpeech(input: { text: string; languageCode: string; voiceName?: string; audioEncoding?: "MP3" | "LINEAR16" }): ReturnType<VoiceProvider["synthesizeSpeech"]> {
     return {
       audioBuffer: Buffer.from(`mock-audio:${input.text}`),
       audioFormat: "audio/wav",
@@ -148,7 +149,7 @@ export class GoogleDialogflowVoiceProvider extends MockVoiceProvider {
     };
   }
 
-  async synthesizeSpeech(input: { text: string; languageCode: string; voiceName?: string }) {
+  async synthesizeSpeech(input: { text: string; languageCode: string; voiceName?: string; audioEncoding?: "MP3" | "LINEAR16" }) {
     const token = await this.getAccessToken();
     const response = await fetch("https://texttospeech.googleapis.com/v1/text:synthesize", {
       method: "POST",
@@ -162,7 +163,7 @@ export class GoogleDialogflowVoiceProvider extends MockVoiceProvider {
           languageCode: input.languageCode,
           name: input.voiceName || this.config.voiceName || "th-TH-Standard-A"
         },
-        audioConfig: { audioEncoding: "LINEAR16", sampleRateHertz: 8000 }
+        audioConfig: { audioEncoding: input.audioEncoding ?? "MP3", sampleRateHertz: 8000 }
       })
     });
     const json = await response.json() as { audioContent?: string; error?: { message?: string } };
@@ -171,7 +172,7 @@ export class GoogleDialogflowVoiceProvider extends MockVoiceProvider {
     }
     return {
       audioBuffer: Buffer.from(json.audioContent, "base64"),
-      audioFormat: "audio/wav",
+      audioFormat: (input.audioEncoding ?? "MP3") === "LINEAR16" ? "audio/l16" : "audio/mpeg",
       rawResponse: { provider: "google-tts", voiceName: input.voiceName || this.config.voiceName }
     };
   }

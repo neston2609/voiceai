@@ -6,13 +6,16 @@ import helmet from "helmet";
 import jwt from "jsonwebtoken";
 import { v4 as uuid } from "uuid";
 import { z } from "zod";
-import { createStore, defaultOrgId, persistAiProviders, persistAsteriskConfigs, persistDialogflowConfigs, persistFlows, persistPrompts, sampleGraph } from "./data.js";
+import { createStore, defaultOrgId, persistAiProviders, persistAsteriskConfigs, persistDialogflowConfigs, persistFlows, persistKnowledgeBases, persistPrompts, persistTelephonyConnections, sampleGraph } from "./data.js";
 import { decryptSecret, encryptSecret, maskSecret } from "./common/crypto/encryption.js";
 import { logger } from "./common/logger/logger.js";
 import { createAiProviderAdapter, getAiProviderBaseUrl, listAiProviderModels } from "./modules/ai-providers/adapters.js";
 import { changePassword, login, publicUser } from "./modules/auth/auth.service.js";
 import { validateFlow } from "./modules/flows/validation.js";
+import { chunkText, extractFileText, loadDatabaseText, scrapeWebsiteText } from "./modules/knowledge/knowledge.service.js";
 import { simulateCall } from "./modules/runtime/runtime.service.js";
+import { registerSipConnection } from "./modules/telephony/sip-registration.js";
+import { startSipVoiceBot } from "./modules/telephony/sip-voice-bridge.js";
 import { GoogleDialogflowVoiceProvider, parseServiceAccountJson } from "./modules/voice/providers.js";
 
 const app = express();
@@ -341,6 +344,7 @@ const promptSchema = z.object({
   systemPrompt: z.string().min(1),
   fallbackPrompt: z.string().min(1),
   language: z.string().min(2).default("th-TH"),
+  knowledgeBaseIds: z.array(z.string()).optional(),
   isActive: z.boolean().optional()
 });
 
@@ -358,6 +362,7 @@ app.post(
       systemPrompt: body.systemPrompt,
       fallbackPrompt: body.fallbackPrompt,
       language: body.language,
+      knowledgeBaseIds: body.knowledgeBaseIds ?? [],
       version: 1,
       isActive: body.isActive ?? true,
       createdAt: now,
@@ -380,6 +385,7 @@ app.patch(
     if (body.systemPrompt !== undefined) prompt.systemPrompt = body.systemPrompt;
     if (body.fallbackPrompt !== undefined) prompt.fallbackPrompt = body.fallbackPrompt;
     if (body.language !== undefined) prompt.language = body.language;
+    if (body.knowledgeBaseIds !== undefined) prompt.knowledgeBaseIds = body.knowledgeBaseIds;
     if (body.isActive !== undefined) prompt.isActive = body.isActive;
     prompt.version += 1;
     prompt.updatedAt = new Date().toISOString();
@@ -522,6 +528,123 @@ app.get("/api/call-sessions/:id/provider-requests", requireAuth, (req, res) => r
 app.get("/api/users", requireAuth, (_req, res) => res.json(store.users.map(publicUser)));
 app.get("/api/audit-logs", requireAuth, (_req, res) => res.json(store.auditLogs));
 
+const knowledgeBaseSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  sourceType: z.enum(["TEXT", "FILE", "DATABASE", "WEBSITE"])
+});
+
+app.get("/api/knowledge-bases", requireAuth, (_req, res) => {
+  res.json(store.knowledgeBases.map((kb) => ({
+    ...kb,
+    sourceConfig: {
+      ...kb.sourceConfig,
+      connectionString: kb.sourceConfig.connectionString ? "***masked***" : undefined
+    }
+  })));
+});
+
+app.post(
+  "/api/knowledge-bases",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const body = knowledgeBaseSchema.parse(req.body);
+    const nowText = new Date().toISOString();
+    const kb = {
+      id: `kb_${uuid().slice(0, 8)}`,
+      organizationId: defaultOrgId,
+      name: body.name,
+      description: body.description,
+      sourceType: body.sourceType,
+      sourceConfig: {},
+      chunks: [],
+      status: "empty" as const,
+      createdAt: nowText,
+      updatedAt: nowText
+    };
+    store.knowledgeBases.push(kb);
+    await persistKnowledgeBases(store.knowledgeBases);
+    res.status(201).json(kb);
+  })
+);
+
+app.delete(
+  "/api/knowledge-bases/:id",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const index = store.knowledgeBases.findIndex((item) => item.id === req.params.id);
+    if (index === -1) return res.status(404).json({ message: "Knowledge base not found" });
+    store.knowledgeBases.splice(index, 1);
+    await persistKnowledgeBases(store.knowledgeBases);
+    res.status(204).send();
+  })
+);
+
+async function updateKnowledgeBaseChunks(id: string, sourceConfig: Record<string, unknown>, text: string, sourceRef?: string) {
+  const kb = store.knowledgeBases.find((item) => item.id === id);
+  if (!kb) throw new Error("Knowledge base not found");
+  kb.sourceConfig = sourceConfig;
+  kb.chunks = chunkText(text, sourceRef);
+  kb.status = kb.chunks.length ? "ready" : "failed";
+  kb.errorMessage = kb.chunks.length ? undefined : "No text content was extracted.";
+  kb.updatedAt = new Date().toISOString();
+  await persistKnowledgeBases(store.knowledgeBases);
+  return kb;
+}
+
+app.post(
+  "/api/knowledge-bases/:id/ingest-text",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const body = z.object({ text: z.string().min(1) }).parse(req.body);
+    const kb = await updateKnowledgeBaseChunks(String(req.params.id), { kind: "direct-text" }, body.text, "manual text");
+    res.json(kb);
+  })
+);
+
+app.post(
+  "/api/knowledge-bases/:id/ingest-url",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const body = z.object({ url: z.string().url() }).parse(req.body);
+    const text = await scrapeWebsiteText(body.url);
+    const kb = await updateKnowledgeBaseChunks(String(req.params.id), { url: body.url }, text, body.url);
+    res.json(kb);
+  })
+);
+
+app.post(
+  "/api/knowledge-bases/:id/ingest-file",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const body = z.object({ fileName: z.string().min(1), mimeType: z.string().optional(), base64: z.string().min(1) }).parse(req.body);
+    const text = await extractFileText(body);
+    const kb = await updateKnowledgeBaseChunks(String(req.params.id), { fileName: body.fileName, mimeType: body.mimeType }, text, body.fileName);
+    res.json(kb);
+  })
+);
+
+app.post(
+  "/api/knowledge-bases/:id/ingest-database",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const body = z.object({
+      connectionString: z.string().min(1),
+      table: z.string().optional(),
+      query: z.string().optional(),
+      limit: z.number().int().optional()
+    }).parse(req.body);
+    const text = await loadDatabaseText(body);
+    const kb = await updateKnowledgeBaseChunks(String(req.params.id), {
+      connectionString: body.connectionString,
+      table: body.table,
+      query: body.query,
+      limit: body.limit
+    }, text, body.table ?? "database query");
+    res.json({ ...kb, sourceConfig: { ...kb.sourceConfig, connectionString: "***masked***" } });
+  })
+);
+
 function publicDialogflowConfig(config: (typeof store.dialogflowConfigs)[number]) {
   return {
     ...config,
@@ -636,6 +759,166 @@ function publicAsteriskConfig(config: (typeof store.asteriskConfigs)[number]) {
     encryptedPassword: undefined
   };
 }
+
+function publicTelephonyConnection(config: (typeof store.telephonyConnections)[number]) {
+  return {
+    ...config,
+    password: config.encryptedPassword ? "********" : "",
+    encryptedPassword: undefined
+  };
+}
+
+const telephonyConnectionSchema = z.object({
+  name: z.string().min(1),
+  type: z.enum(["ARI", "SIP"]),
+  host: z.string().min(1),
+  port: z.number().int().min(1).max(65535),
+  transport: z.enum(["UDP", "TCP", "TLS", "WS", "WSS"]),
+  ariUrl: z.string().url().optional(),
+  username: z.string().min(1),
+  password: z.string().optional(),
+  extension: z.string().min(1),
+  appName: z.string().optional(),
+  flowId: z.string().optional(),
+  isActive: z.boolean().optional()
+});
+
+app.get("/api/telephony-connections", requireAuth, (_req, res) => {
+  res.json(store.telephonyConnections.map(publicTelephonyConnection));
+});
+
+app.post(
+  "/api/telephony-connections",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const body = telephonyConnectionSchema.parse(req.body);
+    if (body.flowId && !store.flows.some((flow) => flow.id === body.flowId)) {
+      return res.status(400).json({ message: "Selected flow does not exist." });
+    }
+    if (body.type === "ARI" && !body.ariUrl) {
+      return res.status(400).json({ message: "ARI URL is required for ARI telephony connections." });
+    }
+    const nowText = new Date().toISOString();
+    const connection = {
+      id: `tel_${uuid().slice(0, 8)}`,
+      organizationId: defaultOrgId,
+      name: body.name,
+      type: body.type,
+      host: body.host,
+      port: body.port,
+      transport: body.transport,
+      ariUrl: body.ariUrl,
+      username: body.username,
+      encryptedPassword: body.password ? encryptSecret(body.password) : undefined,
+      extension: body.extension,
+      appName: body.appName,
+      flowId: body.flowId,
+      isActive: body.isActive ?? true,
+      status: "configured" as const,
+      updatedAt: nowText,
+      createdAt: nowText
+    };
+    store.telephonyConnections.push(connection);
+    await persistTelephonyConnections(store.telephonyConnections);
+    res.status(201).json(publicTelephonyConnection(connection));
+  })
+);
+
+app.patch(
+  "/api/telephony-connections/:id",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const body = telephonyConnectionSchema.partial().parse(req.body);
+    const connection = store.telephonyConnections.find((item) => item.id === req.params.id);
+    if (!connection) return res.status(404).json({ message: "Telephony connection not found" });
+    if (body.flowId && !store.flows.some((flow) => flow.id === body.flowId)) {
+      return res.status(400).json({ message: "Selected flow does not exist." });
+    }
+    if ((body.type ?? connection.type) === "ARI" && !(body.ariUrl ?? connection.ariUrl)) {
+      return res.status(400).json({ message: "ARI URL is required for ARI telephony connections." });
+    }
+    if (body.name !== undefined) connection.name = body.name;
+    if (body.type !== undefined) connection.type = body.type;
+    if (body.host !== undefined) connection.host = body.host;
+    if (body.port !== undefined) connection.port = body.port;
+    if (body.transport !== undefined) connection.transport = body.transport;
+    if (body.ariUrl !== undefined) connection.ariUrl = body.ariUrl;
+    if (body.username !== undefined) connection.username = body.username;
+    if (body.password && body.password !== "********") connection.encryptedPassword = encryptSecret(body.password);
+    if (body.extension !== undefined) connection.extension = body.extension;
+    if (body.appName !== undefined) connection.appName = body.appName;
+    if (body.flowId !== undefined) connection.flowId = body.flowId;
+    if (body.isActive !== undefined) connection.isActive = body.isActive;
+    connection.status = "configured";
+    connection.updatedAt = new Date().toISOString();
+    await persistTelephonyConnections(store.telephonyConnections);
+    res.json(publicTelephonyConnection(connection));
+  })
+);
+
+app.delete(
+  "/api/telephony-connections/:id",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const index = store.telephonyConnections.findIndex((item) => item.id === req.params.id);
+    if (index === -1) return res.status(404).json({ message: "Telephony connection not found" });
+    store.telephonyConnections.splice(index, 1);
+    await persistTelephonyConnections(store.telephonyConnections);
+    res.status(204).send();
+  })
+);
+
+app.post(
+  "/api/telephony-connections/:id/test",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const connection = store.telephonyConnections.find((item) => item.id === req.params.id);
+    if (!connection) return res.status(404).json({ message: "Telephony connection not found" });
+    if (connection.type === "ARI") {
+      if (!connection.ariUrl) return res.status(400).json({ message: "ARI URL is not configured." });
+      const result = await testAriConnection({
+        id: connection.id,
+        organizationId: connection.organizationId,
+        name: connection.name,
+        ariUrl: connection.ariUrl,
+        username: connection.username,
+        encryptedPassword: connection.encryptedPassword,
+        appName: connection.appName ?? "voicebot-app",
+        botExtension: connection.extension,
+        status: connection.status,
+        updatedAt: connection.updatedAt
+      });
+      connection.status = result.ok ? "connected" : "connection-failed";
+      connection.updatedAt = new Date().toISOString();
+      connection.lastRegistrationMessage = result.message;
+      await persistTelephonyConnections(store.telephonyConnections);
+      return res.status(result.ok ? 200 : 502).json({ ...result, connection: publicTelephonyConnection(connection) });
+    }
+    const result = await startSipVoiceBot(connection, store);
+    connection.status = result.ok ? "registered" : "registration-failed";
+    connection.registeredAt = result.registeredAt;
+    connection.lastRegistrationMessage = result.message;
+    connection.updatedAt = new Date().toISOString();
+    await persistTelephonyConnections(store.telephonyConnections);
+    res.status(result.ok ? 200 : 502).json({ ...result, connection: publicTelephonyConnection(connection) });
+  })
+);
+
+app.post(
+  "/api/telephony-connections/:id/register",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const connection = store.telephonyConnections.find((item) => item.id === req.params.id);
+    if (!connection) return res.status(404).json({ message: "Telephony connection not found" });
+    const result = await startSipVoiceBot(connection, store);
+    connection.status = result.ok ? "registered" : "registration-failed";
+    connection.registeredAt = result.registeredAt;
+    connection.lastRegistrationMessage = result.message;
+    connection.updatedAt = new Date().toISOString();
+    await persistTelephonyConnections(store.telephonyConnections);
+    res.status(result.ok ? 200 : 502).json({ ...result, connection: publicTelephonyConnection(connection) });
+  })
+);
 
 app.get("/api/asterisk-configs", requireAuth, (_req, res) => res.json(store.asteriskConfigs.map(publicAsteriskConfig)));
 

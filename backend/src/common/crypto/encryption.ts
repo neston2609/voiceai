@@ -23,9 +23,13 @@ export function decryptSecret(payload: string, secret = process.env.ENCRYPTION_K
   if (!ivText || !tagText || !encryptedText) {
     throw new Error("Invalid encrypted payload");
   }
-  const decipher = crypto.createDecipheriv(ALGORITHM, normalizeKey(secret), Buffer.from(ivText, "base64"));
-  decipher.setAuthTag(Buffer.from(tagText, "base64"));
-  return Buffer.concat([decipher.update(Buffer.from(encryptedText, "base64")), decipher.final()]).toString("utf8");
+  try {
+    const decipher = crypto.createDecipheriv(ALGORITHM, normalizeKey(secret), Buffer.from(ivText, "base64"));
+    decipher.setAuthTag(Buffer.from(tagText, "base64"));
+    return Buffer.concat([decipher.update(Buffer.from(encryptedText, "base64")), decipher.final()]).toString("utf8");
+  } catch {
+    throw new Error("Saved credential cannot be decrypted with the current ENCRYPTION_KEY. Re-save this API key, password, or service account JSON.");
+  }
 }
 
 export function maskSecret(value?: string | null): string | null {

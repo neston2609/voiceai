@@ -8,9 +8,11 @@ import type {
   CallFlow,
   CallSession,
   DialogflowConfig,
+  KnowledgeBase,
   Organization,
   PromptTemplate,
   ProviderRequestLog,
+  TelephonyConnection,
   Transcript,
   User
 } from "./types.js";
@@ -23,6 +25,8 @@ const aiProviderConfigPath = path.join(process.cwd(), "runtime-data", "ai-provid
 const dialogflowConfigPath = path.join(process.cwd(), "runtime-data", "dialogflow-configs.json");
 const promptConfigPath = path.join(process.cwd(), "runtime-data", "prompts.json");
 const flowConfigPath = path.join(process.cwd(), "runtime-data", "flows.json");
+const telephonyConnectionPath = path.join(process.cwd(), "runtime-data", "telephony-connections.json");
+const knowledgeBasePath = path.join(process.cwd(), "runtime-data", "knowledge-bases.json");
 
 type StoredAsteriskConfig = {
   id: string;
@@ -49,6 +53,8 @@ export interface Store {
   transcripts: Transcript[];
   providerLogs: ProviderRequestLog[];
   asteriskConfigs: StoredAsteriskConfig[];
+  telephonyConnections: TelephonyConnection[];
+  knowledgeBases: KnowledgeBase[];
   auditLogs: Array<Record<string, unknown>>;
 }
 
@@ -64,6 +70,7 @@ export const sampleGraph = {
         model: "gpt-4o",
         promptId: "prompt_support",
         dialogflowConfigId: "df_mock",
+        knowledgeBaseIds: [],
         greeting: "สวัสดีค่ะ ยินดีต้อนรับ ต้องการให้ช่วยเรื่องอะไรคะ",
         maxRetry: 3,
         sttConfidenceThreshold: 0.8,
@@ -121,6 +128,45 @@ export async function createStore(): Promise<Store> {
     asteriskConfigs = JSON.parse(await readFile(asteriskConfigPath, "utf8")) as StoredAsteriskConfig[];
   } catch {
     asteriskConfigs = defaultAsteriskConfigs;
+  }
+
+  const defaultTelephonyConnections: TelephonyConnection[] = asteriskConfigs.map((config) => ({
+    id: `tel_${config.id}`,
+    organizationId: defaultOrgId,
+    name: config.name,
+    type: "ARI",
+    host: (() => {
+      try {
+        return new URL(config.ariUrl).hostname;
+      } catch {
+        return "freepbx.local";
+      }
+    })(),
+    port: (() => {
+      try {
+        return Number(new URL(config.ariUrl).port || 8088);
+      } catch {
+        return 8088;
+      }
+    })(),
+    transport: "TCP",
+    ariUrl: config.ariUrl,
+    username: config.username,
+    encryptedPassword: config.encryptedPassword,
+    extension: config.botExtension,
+    appName: config.appName,
+    flowId: "flow_inbound_support",
+    isActive: true,
+    status: config.status === "connected" ? "connected" : "not-tested",
+    updatedAt: config.updatedAt,
+    createdAt
+  }));
+
+  let telephonyConnections = defaultTelephonyConnections;
+  try {
+    telephonyConnections = JSON.parse(await readFile(telephonyConnectionPath, "utf8")) as TelephonyConnection[];
+  } catch {
+    telephonyConnections = defaultTelephonyConnections;
   }
 
   const defaultAiProviders: AiProviderConfig[] = [
@@ -213,6 +259,13 @@ export async function createStore(): Promise<Store> {
     flows = defaultFlows;
   }
 
+  let knowledgeBases: KnowledgeBase[] = [];
+  try {
+    knowledgeBases = JSON.parse(await readFile(knowledgeBasePath, "utf8")) as KnowledgeBase[];
+  } catch {
+    knowledgeBases = [];
+  }
+
   return {
     organizations: [{ id: defaultOrgId, name: "Default Organization", slug: "default", isActive: true, createdAt, updatedAt: createdAt }],
     users: [
@@ -239,6 +292,8 @@ export async function createStore(): Promise<Store> {
     transcripts: [],
     providerLogs: [],
     asteriskConfigs,
+    telephonyConnections,
+    knowledgeBases,
     auditLogs: [
       {
         id: uuid(),
@@ -277,4 +332,14 @@ export async function persistPrompts(configs: PromptTemplate[]) {
 export async function persistFlows(configs: CallFlow[]) {
   await mkdir(path.dirname(flowConfigPath), { recursive: true });
   await writeFile(flowConfigPath, `${JSON.stringify(configs, null, 2)}\n`, "utf8");
+}
+
+export async function persistTelephonyConnections(configs: TelephonyConnection[]) {
+  await mkdir(path.dirname(telephonyConnectionPath), { recursive: true });
+  await writeFile(telephonyConnectionPath, `${JSON.stringify(configs, null, 2)}\n`, "utf8");
+}
+
+export async function persistKnowledgeBases(configs: KnowledgeBase[]) {
+  await mkdir(path.dirname(knowledgeBasePath), { recursive: true });
+  await writeFile(knowledgeBasePath, `${JSON.stringify(configs, null, 2)}\n`, "utf8");
 }

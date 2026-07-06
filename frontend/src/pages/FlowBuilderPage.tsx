@@ -20,6 +20,7 @@ import { useAppStore } from "../store/appStore";
 import type { CallFlow } from "../types/domain";
 
 type SelectOption = { id: string; name: string; defaultModel?: string; version?: number };
+type KnowledgeOption = { id: string; name: string; status: string; chunks?: unknown[] };
 type FlowMeta = { id?: string; name: string; description: string; status: "DRAFT" | "PUBLISHED" | "ARCHIVED" };
 
 const defaultNodes: Node[] = [
@@ -66,6 +67,7 @@ export function FlowBuilderPage() {
   const [providers, setProviders] = useState<SelectOption[]>([]);
   const [prompts, setPrompts] = useState<SelectOption[]>([]);
   const [dialogflows, setDialogflows] = useState<SelectOption[]>([]);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeOption[]>([]);
   const nodeTypes = useMemo(() => nodeTypesByName, []);
 
   const selected = nodes.find((node) => node.selected) ?? nodes[0];
@@ -74,11 +76,13 @@ export function FlowBuilderPage() {
     Promise.all([
       api.get("/ai-providers"),
       api.get("/prompts"),
-      api.get("/dialogflow-configs")
-    ]).then(([providerResponse, promptResponse, dialogflowResponse]) => {
+      api.get("/dialogflow-configs"),
+      api.get("/knowledge-bases")
+    ]).then(([providerResponse, promptResponse, dialogflowResponse, knowledgeResponse]) => {
       setProviders(providerResponse.data.map((item: { id: string; name: string; defaultModel?: string }) => ({ id: item.id, name: item.name, defaultModel: item.defaultModel })));
       setPrompts(promptResponse.data.map((item: { id: string; name: string; version?: number }) => ({ id: item.id, name: item.name, version: item.version })));
       setDialogflows(dialogflowResponse.data.map((item: { id: string; name: string }) => ({ id: item.id, name: item.name })));
+      setKnowledgeBases(knowledgeResponse.data.map((item: KnowledgeOption) => ({ id: item.id, name: item.name, status: item.status, chunks: item.chunks })));
     }).catch(() => undefined);
   }, []);
 
@@ -183,6 +187,14 @@ export function FlowBuilderPage() {
     setNodes((current) => [...current.map((node) => ({ ...node, selected: false })), { ...nextNode, selected: true }]);
   }
 
+  function toggleNodeKnowledgeBase(id: string) {
+    if (!selected) return;
+    const current = Array.isArray(selected.data.knowledgeBaseIds) ? selected.data.knowledgeBaseIds.filter((item): item is string => typeof item === "string") : [];
+    const set = new Set(current);
+    if (set.has(id)) set.delete(id); else set.add(id);
+    setNodes((nodesNow) => nodesNow.map((node) => node.id === selected.id ? { ...node, data: { ...node.data, knowledgeBaseIds: Array.from(set) } } : node));
+  }
+
   function exportJson() {
     const blob = new Blob([JSON.stringify({ ...meta, graphJson: graphJson() }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -280,6 +292,17 @@ export function FlowBuilderPage() {
                 <SelectSetting label="System prompt" value={String(selected.data.promptId ?? prompts[0]?.id ?? "")} options={prompts.map((item) => ({ value: item.id, label: `${item.name} v${item.version ?? 1}` }))} onChange={(value) => updateSelectedNode("promptId", value)} />
                 <div style={{ height: 15 }} />
                 <SelectSetting label="Dialogflow config" value={String(selected.data.dialogflowConfigId ?? dialogflows[0]?.id ?? "")} options={dialogflows.map((item) => ({ value: item.id, label: item.name }))} onChange={(value) => updateSelectedNode("dialogflowConfigId", value)} />
+                <div style={{ height: 15 }} />
+                <label className="label">RAG knowledge bases</label>
+                <div style={{ display: "grid", gap: 7 }}>
+                  {knowledgeBases.length ? knowledgeBases.map((kb) => (
+                    <label key={kb.id} className="inline panel" style={{ gap: 8, padding: 9, background: "var(--surface2)" }}>
+                      <input type="checkbox" checked={(Array.isArray(selected.data.knowledgeBaseIds) ? selected.data.knowledgeBaseIds : []).includes(kb.id)} onChange={() => toggleNodeKnowledgeBase(kb.id)} />
+                      <span style={{ fontSize: 12, flex: 1 }}>{kb.name}</span>
+                      <span className={`badge ${kb.status === "ready" ? "green" : "amber"}`}>{kb.chunks?.length ?? 0}</span>
+                    </label>
+                  )) : <div className="muted" style={{ fontSize: 11.5 }}>No knowledge bases configured.</div>}
+                </div>
               </>
             ) : null}
             <div style={{ height: 15 }} />

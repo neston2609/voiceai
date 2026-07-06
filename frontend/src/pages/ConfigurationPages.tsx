@@ -283,8 +283,10 @@ export function PromptsPage() {
     language: string;
     version: number;
     isActive: boolean;
+    knowledgeBaseIds?: string[];
     updatedAt: string;
   };
+  type KnowledgeBase = { id: string; name: string; sourceType: "TEXT" | "FILE" | "DATABASE" | "WEBSITE"; status: string; chunks: Array<{ id: string }>; errorMessage?: string };
   type PromptForm = Omit<PromptTemplate, "id" | "version" | "updatedAt"> & { id?: string; version?: number; updatedAt?: string };
 
   const emptyPrompt = (): PromptForm => ({
@@ -292,16 +294,20 @@ export function PromptsPage() {
     systemPrompt: "คุณคือผู้ช่วยเสียงภาษาไทย ตอบให้สุภาพ กระชับ และช่วยผู้โทรจนจบงาน",
     fallbackPrompt: "ขอโทษค่ะ ฉันยังไม่เข้าใจ ขอพูดอีกครั้งได้ไหมคะ",
     language: "th-TH",
+    knowledgeBaseIds: [],
     isActive: true
   });
 
   const [items, setItems] = useState<PromptTemplate[]>([]);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+  const [kbDraft, setKbDraft] = useState({ name: "Support KB", sourceType: "TEXT", text: "", url: "", connectionString: "", table: "", query: "" });
   const [form, setForm] = useState<PromptForm>(emptyPrompt());
   const [result, setResult] = useState("");
   const [resultTone, setResultTone] = useState<"green" | "amber" | "red">("green");
 
   useEffect(() => {
     loadPrompts();
+    loadKnowledgeBases();
   }, []);
 
   async function loadPrompts() {
@@ -312,6 +318,15 @@ export function PromptsPage() {
     } catch (error: unknown) {
       setResultTone("red");
       setResult(getApiMessage(error, "Unable to load prompts"));
+    }
+  }
+
+  async function loadKnowledgeBases() {
+    try {
+      const { data } = await api.get<KnowledgeBase[]>("/knowledge-bases");
+      setKnowledgeBases(data);
+    } catch {
+      setKnowledgeBases([]);
     }
   }
 
@@ -331,6 +346,7 @@ export function PromptsPage() {
         systemPrompt: form.systemPrompt,
         fallbackPrompt: form.fallbackPrompt,
         language: form.language,
+        knowledgeBaseIds: form.knowledgeBaseIds ?? [],
         isActive: form.isActive
       };
       const { data } = form.id ? await api.patch(`/prompts/${form.id}`, payload) : await api.post("/prompts", payload);
@@ -382,6 +398,41 @@ export function PromptsPage() {
     }
   }
 
+  function toggleKnowledgeBase(id: string) {
+    setForm((current) => {
+      const existing = new Set(current.knowledgeBaseIds ?? []);
+      if (existing.has(id)) existing.delete(id); else existing.add(id);
+      return { ...current, knowledgeBaseIds: Array.from(existing) };
+    });
+  }
+
+  async function createAndIngestKnowledgeBase(file?: File) {
+    try {
+      const { data: kb } = await api.post("/knowledge-bases", { name: kbDraft.name, sourceType: kbDraft.sourceType });
+      if (kbDraft.sourceType === "TEXT") {
+        await api.post(`/knowledge-bases/${kb.id}/ingest-text`, { text: kbDraft.text });
+      } else if (kbDraft.sourceType === "WEBSITE") {
+        await api.post(`/knowledge-bases/${kb.id}/ingest-url`, { url: kbDraft.url });
+      } else if (kbDraft.sourceType === "DATABASE") {
+        await api.post(`/knowledge-bases/${kb.id}/ingest-database`, {
+          connectionString: kbDraft.connectionString,
+          table: kbDraft.table || undefined,
+          query: kbDraft.query || undefined
+        });
+      } else if (file) {
+        const base64 = await fileToBase64(file);
+        await api.post(`/knowledge-bases/${kb.id}/ingest-file`, { fileName: file.name, mimeType: file.type, base64 });
+      }
+      await loadKnowledgeBases();
+      setForm((current) => ({ ...current, knowledgeBaseIds: [...(current.knowledgeBaseIds ?? []), kb.id] }));
+      setResultTone("green");
+      setResult(`Knowledge base ${kbDraft.name} ingested`);
+    } catch (error: unknown) {
+      setResultTone("red");
+      setResult(getApiMessage(error, "Could not ingest knowledge base"));
+    }
+  }
+
   return (
     <div className="page" style={{ maxWidth: 1180 }}>
       <div style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 16 }}>
@@ -428,6 +479,42 @@ export function PromptsPage() {
               <input type="checkbox" checked={form.isActive} onChange={(event) => updateForm("isActive", event.target.checked)} />
               Active prompt
             </label>
+            <div className="panel" style={{ marginTop: 16, padding: 14, background: "var(--surface2)" }}>
+              <div className="row-between" style={{ marginBottom: 10 }}>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>RAG / Knowledge bases</div>
+                <Badge tone="indigo">{form.knowledgeBaseIds?.length ?? 0} selected</Badge>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(210px,1fr))", gap: 8, marginBottom: 12 }}>
+                {knowledgeBases.map((kb) => (
+                  <label key={kb.id} className="panel inline" style={{ gap: 8, padding: 10, background: "var(--surface)" }}>
+                    <input type="checkbox" checked={(form.knowledgeBaseIds ?? []).includes(kb.id)} onChange={() => toggleKnowledgeBase(kb.id)} />
+                    <span style={{ flex: 1, fontSize: 12.5, fontWeight: 600 }}>{kb.name}</span>
+                    <Badge tone={kb.status === "ready" ? "green" : kb.status === "failed" ? "red" : "amber"}>{kb.chunks.length}</Badge>
+                  </label>
+                ))}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 140px", gap: 10 }}>
+                <input className="input" value={kbDraft.name} onChange={(event) => setKbDraft((current) => ({ ...current, name: event.target.value }))} placeholder="KB name" />
+                <select className="input" value={kbDraft.sourceType} onChange={(event) => setKbDraft((current) => ({ ...current, sourceType: event.target.value }))}>
+                  <option value="TEXT">Text</option>
+                  <option value="FILE">PDF / Word / Text</option>
+                  <option value="WEBSITE">Website</option>
+                  <option value="DATABASE">Database</option>
+                </select>
+              </div>
+              {kbDraft.sourceType === "TEXT" ? <textarea className="textarea mono" rows={4} value={kbDraft.text} onChange={(event) => setKbDraft((current) => ({ ...current, text: event.target.value }))} placeholder="Paste knowledge text" style={{ marginTop: 10 }} /> : null}
+              {kbDraft.sourceType === "WEBSITE" ? <input className="input" value={kbDraft.url} onChange={(event) => setKbDraft((current) => ({ ...current, url: event.target.value }))} placeholder="https://example.com/page" style={{ marginTop: 10 }} /> : null}
+              {kbDraft.sourceType === "DATABASE" ? (
+                <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+                  <input className="input" value={kbDraft.connectionString} onChange={(event) => setKbDraft((current) => ({ ...current, connectionString: event.target.value }))} placeholder="postgres://user:pass@host:5432/db" />
+                  <input className="input" value={kbDraft.table} onChange={(event) => setKbDraft((current) => ({ ...current, table: event.target.value }))} placeholder="schema.table or leave blank when using query" />
+                  <textarea className="textarea mono" rows={3} value={kbDraft.query} onChange={(event) => setKbDraft((current) => ({ ...current, query: event.target.value }))} placeholder="optional SELECT query" />
+                </div>
+              ) : null}
+              <div className="inline" style={{ gap: 10, marginTop: 10 }}>
+                {kbDraft.sourceType === "FILE" ? <input className="input" type="file" accept=".txt,.md,.pdf,.docx,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => createAndIngestKnowledgeBase(event.target.files?.[0])} /> : <button className="btn teal" onClick={() => createAndIngestKnowledgeBase()}>Ingest KB</button>}
+              </div>
+            </div>
             <div className="inline" style={{ gap: 10, marginTop: 16, flexWrap: "wrap" }}>
               <button className="btn teal" onClick={testPrompt}><FileText size={14} />Test prompt</button>
               <button className="btn danger" onClick={deletePrompt}><Trash2 size={14} />Delete</button>
@@ -557,93 +644,220 @@ export function DialogflowPage() {
 }
 
 export function AsteriskPage() {
+  type TelephonyConnection = {
+    id?: string;
+    name: string;
+    type: "ARI" | "SIP";
+    host: string;
+    port: string;
+    transport: "UDP" | "TCP" | "TLS" | "WS" | "WSS";
+    ariUrl: string;
+    username: string;
+    password: string;
+    extension: string;
+    appName: string;
+    flowId: string;
+    status?: string;
+    lastRegistrationMessage?: string;
+  };
+  type FlowOption = { id: string; name: string; status: string };
+
   const [result, setResult] = useState("");
   const [resultTone, setResultTone] = useState<"green" | "amber" | "red">("green");
   const [liveStatus, setLiveStatus] = useState("checking");
-  const [config, setConfig] = useState({
-    name: "FreePBX ARI",
-    ariUrl: "http://freepbx.local:8088/ari",
-    username: "voicebot",
+  const [connections, setConnections] = useState<TelephonyConnection[]>([]);
+  const [flows, setFlows] = useState<FlowOption[]>([]);
+  const [config, setConfig] = useState<TelephonyConnection>({
+    name: "FreePBX SIP 7777",
+    type: "SIP",
+    host: "192.168.30.14",
+    port: "5060",
+    transport: "UDP",
+    ariUrl: "http://192.168.30.14:8088/ari",
+    username: "7777",
     password: "",
     appName: "voicebot-app",
-    botExtension: "7777"
+    extension: "7777",
+    flowId: ""
   });
 
   useEffect(() => {
     api.get("/system/health").then(({ data }) => setLiveStatus(data.mockMode ? "disabled" : "active")).catch(() => setLiveStatus("unknown"));
-    api.get("/asterisk-configs").then(({ data }) => {
+    api.get("/flows").then(({ data }) => setFlows(data.map((flow: { id: string; name: string; status: string }) => ({ id: flow.id, name: flow.name, status: flow.status })))).catch(() => undefined);
+    loadConnections();
+  }, []);
+
+  function loadConnections() {
+    api.get("/telephony-connections").then(({ data }) => {
+      const mapped = data.map((item: Record<string, unknown>) => ({
+        id: String(item.id),
+        name: String(item.name ?? ""),
+        type: (item.type === "ARI" ? "ARI" : "SIP") as "ARI" | "SIP",
+        host: String(item.host ?? ""),
+        port: String(item.port ?? (item.type === "ARI" ? 8088 : 5060)),
+        transport: (item.transport ?? "UDP") as "UDP" | "TCP" | "TLS" | "WS" | "WSS",
+        ariUrl: String(item.ariUrl ?? ""),
+        username: String(item.username ?? ""),
+        password: String(item.password ?? ""),
+        appName: String(item.appName ?? "voicebot-app"),
+        extension: String(item.extension ?? "7777"),
+        flowId: String(item.flowId ?? ""),
+        status: String(item.status ?? "not-tested"),
+        lastRegistrationMessage: String(item.lastRegistrationMessage ?? "")
+      }));
+      setConnections(mapped);
       const first = data[0];
-      if (!first) return;
-      setConfig({
-        name: first.name ?? "FreePBX ARI",
-        ariUrl: first.ariUrl ?? "",
-        username: first.username ?? "",
-        password: first.password ?? "",
-        appName: first.appName ?? "voicebot-app",
-        botExtension: first.botExtension ?? "7777"
-      });
+      if (first) setConfig(mapped[0]);
     }).catch(() => {
       setResultTone("red");
-      setResult("Unable to load ARI config");
+      setResult("Unable to load telephony connections");
     });
-  }, []);
+  }
 
   function updateConfig(field: keyof typeof config, value: string) {
     setConfig((current) => ({ ...current, [field]: value }));
   }
 
+  function startNew(type: "ARI" | "SIP") {
+    setConfig({
+      name: type === "SIP" ? "FreePBX SIP 7777" : "FreePBX ARI",
+      type,
+      host: "192.168.30.14",
+      port: type === "SIP" ? "5060" : "8088",
+      transport: type === "SIP" ? "UDP" : "TCP",
+      ariUrl: "http://192.168.30.14:8088/ari",
+      username: type === "SIP" ? "7777" : "neston14",
+      password: "",
+      appName: "voicebot-app",
+      extension: "7777",
+      flowId: flows.find((flow) => flow.status === "PUBLISHED")?.id ?? flows[0]?.id ?? ""
+    });
+    setResult("");
+  }
+
+  function payload() {
+    return {
+      name: config.name,
+      type: config.type,
+      host: config.host,
+      port: Number(config.port),
+      transport: config.transport,
+      ariUrl: config.type === "ARI" ? config.ariUrl : undefined,
+      username: config.username,
+      password: config.password || undefined,
+      extension: config.extension,
+      appName: config.appName,
+      flowId: config.flowId || undefined,
+      isActive: true
+    };
+  }
+
   async function save() {
     try {
-      const { data } = await api.patch("/asterisk-configs/ari_mock", config);
-      setConfig((current) => ({ ...current, password: data.password ?? "" }));
+      const { data } = config.id ? await api.patch(`/telephony-connections/${config.id}`, payload()) : await api.post("/telephony-connections", payload());
+      await loadConnections();
+      setConfig((current) => ({ ...current, id: data.id, password: data.password ?? "", status: data.status }));
       setResultTone("green");
-      setResult(`Saved ${data.username}@${data.ariUrl} for extension ${data.botExtension}`);
+      setResult(`Saved ${data.type} ${data.username}@${data.host}:${data.port} for extension ${data.extension}`);
     } catch (error) {
       setResultTone("red");
-      setResult("Could not save ARI configuration");
+      setResult(getApiMessage(error, "Could not save telephony connection"));
     }
   }
 
   async function test() {
+    if (!config.id) {
+      setResultTone("amber");
+      setResult("Save this connection before testing.");
+      return;
+    }
     try {
-      const { data } = await api.post("/asterisk-configs/ari_mock/test");
+      const { data } = await api.post(`/telephony-connections/${config.id}/test`);
+      await loadConnections();
       setResultTone(data.ok ? "green" : "red");
       setResult(data.message);
     } catch (error: unknown) {
-      const message = typeof error === "object" && error && "response" in error
-        ? (error as { response?: { data?: { message?: string } } }).response?.data?.message
-        : undefined;
       setResultTone("red");
-      setResult(message ?? "Live ARI test failed");
+      setResult(getApiMessage(error, "Live telephony test failed"));
+    }
+  }
+
+  async function registerSip() {
+    if (!config.id) {
+      setResultTone("amber");
+      setResult("Save this SIP connection before registering.");
+      return;
+    }
+    try {
+      const { data } = await api.post(`/telephony-connections/${config.id}/register`);
+      await loadConnections();
+      setResultTone(data.ok ? "green" : "red");
+      setResult(data.message);
+    } catch (error: unknown) {
+      setResultTone("red");
+      setResult(getApiMessage(error, "SIP registration failed"));
     }
   }
   return (
-    <div className="page" style={{ maxWidth: 900 }}>
+    <div className="page" style={{ maxWidth: 1180 }}>
       <div className="panel inline" style={{ gap: 8, padding: "11px 15px", marginBottom: 16, background: liveStatus === "active" ? "var(--green50)" : "var(--amber50)" }}>
         <Badge tone={liveStatus === "active" ? "green" : "amber"}>{liveStatus === "active" ? "Live Mode active" : "Live Mode checking"}</Badge>
-        <span style={{ fontSize: 12.5, color: liveStatus === "active" ? "#0B5F32" : "#7A5A12" }}>Test ARI performs a real request to FreePBX when the backend is in live mode.</span>
+        <span style={{ fontSize: 12.5, color: liveStatus === "active" ? "#0B5F32" : "#7A5A12" }}>Manage multiple ARI or SIP voice bot registrations and map each extension to a flow.</span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 16 }}>
+      <div className="panel" style={{ overflow: "hidden", height: "fit-content" }}>
+        <div className="panel-header row-between">
+          <span style={{ fontWeight: 600, fontSize: 13 }}>Telephony connections</span>
+          <div className="inline" style={{ gap: 6 }}>
+            <button className="btn" onClick={() => startNew("SIP")}>SIP</button>
+            <button className="btn" onClick={() => startNew("ARI")}>ARI</button>
+          </div>
+        </div>
+        {connections.map((item) => (
+          <button key={item.id} className="row-between" onClick={() => setConfig(item)} style={{ width: "100%", padding: "12px 15px", border: 0, borderTop: "1px solid var(--border2)", background: item.id === config.id ? "var(--indigo50)" : "transparent", textAlign: "left" }}>
+            <div>
+              <div style={{ fontSize: 12.5, fontWeight: 600 }}>{item.name}</div>
+              <div className="muted" style={{ fontSize: 10.5 }}>{`${item.type} ${item.extension} -> ${flows.find((flow) => flow.id === item.flowId)?.name ?? "No flow"}`}</div>
+            </div>
+            <Badge tone={item.status === "registered" || item.status === "connected" ? "green" : item.status?.includes("failed") ? "red" : "amber"}>{item.status ?? "new"}</Badge>
+          </button>
+        ))}
+        {connections.length === 0 ? <div className="muted" style={{ padding: 15, fontSize: 12 }}>No connections saved yet.</div> : null}
       </div>
       <div className="panel">
         <div className="panel-header inline" style={{ gap: 11 }}>
           <span style={{ width: 36, height: 36, borderRadius: 9, background: "var(--indigo50)", color: "var(--indigo)", display: "grid", placeItems: "center" }}><Phone size={18} /></span>
-          <div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: 14.5 }}>FreePBX / Asterisk - ARI</div><div className="muted" style={{ fontSize: 11.5 }}>Telephony bridge for inbound calls</div></div>
-          <Badge tone={liveStatus === "active" ? "green" : "amber"}>{liveStatus === "active" ? "Live" : "Checking"}</Badge>
+          <div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: 14.5 }}>{config.id ? config.name : "New telephony connection"}</div><div className="muted" style={{ fontSize: 11.5 }}>Inbound extension to Voice AI flow mapping</div></div>
+          <Badge tone={config.status === "registered" || config.status === "connected" ? "green" : "amber"}>{config.status ?? "new"}</Badge>
         </div>
         <div style={{ padding: 22 }}>
-          <ControlledField label="Config name" value={config.name} onChange={(value) => updateConfig("name", value)} />
-          <ControlledField label="ARI URL" value={config.ariUrl} onChange={(value) => updateConfig("ariUrl", value)} />
-          <ControlledField label="ARI username" value={config.username} onChange={(value) => updateConfig("username", value)} />
-          <ControlledField label="ARI password" value={config.password} onChange={(value) => updateConfig("password", value)} type="password" />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 180px", gap: 16 }}>
+            <ControlledField label="Config name" value={config.name} onChange={(value) => updateConfig("name", value)} />
+            <SelectField label="Type" value={config.type} onChange={(value) => updateConfig("type", value as "ARI" | "SIP")} options={["SIP", "ARI"]} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 120px 140px", gap: 16 }}>
+            <ControlledField label="Host / PBX IP" value={config.host} onChange={(value) => updateConfig("host", value)} />
+            <ControlledField label="Port" value={config.port} onChange={(value) => updateConfig("port", value)} />
+            <SelectField label="Transport" value={config.transport} onChange={(value) => updateConfig("transport", value as TelephonyConnection["transport"])} options={["UDP", "TCP", "TLS", "WS", "WSS"]} />
+          </div>
+          {config.type === "ARI" ? <ControlledField label="ARI URL" value={config.ariUrl} onChange={(value) => updateConfig("ariUrl", value)} /> : null}
+          <ControlledField label="Username" value={config.username} onChange={(value) => updateConfig("username", value)} />
+          <ControlledField label="Password" value={config.password} onChange={(value) => updateConfig("password", value)} type="password" />
+          <ControlledField label="Voice bot extension" value={config.extension} onChange={(value) => updateConfig("extension", value)} />
           <ControlledField label="App name" value={config.appName} onChange={(value) => updateConfig("appName", value)} />
-          <ControlledField label="Voice bot extension" value={config.botExtension} onChange={(value) => updateConfig("botExtension", value)} />
-          <label className="label">FreePBX dialplan example</label>
-          <pre className="panel mono" style={{ padding: 14, background: "var(--surface2)", fontSize: 12, overflow: "auto" }}>{`[from-internal-custom]\nexten => ${config.botExtension || "7777"},1,NoOp(Voice AI Bot)\n same => n,Stasis(${config.appName || "voicebot-app"})\n same => n,Hangup()`}</pre>
-          <div className="inline" style={{ gap: 10, marginTop: 16 }}>
-            <button className="btn teal" onClick={test}>Test ARI</button>
+          <SelectField label="Run flow for this extension" value={config.flowId} onChange={(value) => updateConfig("flowId", value)} options={flows.map((flow) => flow.id)} />
+          <div className="panel mono" style={{ padding: 14, background: "var(--surface2)", fontSize: 12, overflow: "auto" }}>
+            {config.type === "SIP" ? `SIP REGISTER ${config.username}@${config.host}:${config.port} extension ${config.extension}\nMapped flow: ${flows.find((flow) => flow.id === config.flowId)?.name ?? "No flow selected"}` : `[from-internal-custom]\nexten => ${config.extension || "7777"},1,NoOp(Voice AI Bot)\n same => n,Stasis(${config.appName || "voicebot-app"})\n same => n,Hangup()`}
+          </div>
+          <div className="inline" style={{ gap: 10, marginTop: 16, flexWrap: "wrap" }}>
+            <button className="btn teal" onClick={test}>{config.type === "SIP" ? "Test/Register" : "Test ARI"}</button>
+            {config.type === "SIP" ? <button className="btn teal" onClick={registerSip}>Register SIP</button> : null}
             <button className="btn primary" onClick={save}>Save configuration</button>
             {result ? <span className={`badge ${resultTone}`}>{result}</span> : null}
           </div>
+          {config.lastRegistrationMessage ? <div className="muted" style={{ fontSize: 11.5, marginTop: 10 }}>{config.lastRegistrationMessage}</div> : null}
         </div>
+      </div>
       </div>
     </div>
   );
@@ -722,4 +936,13 @@ function getApiMessage(error: unknown, fallback: string) {
     return response?.data?.message ?? fallback;
   }
   return fallback;
+}
+
+function fileToBase64(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
 }
