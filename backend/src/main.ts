@@ -6,10 +6,10 @@ import helmet from "helmet";
 import jwt from "jsonwebtoken";
 import { v4 as uuid } from "uuid";
 import { z } from "zod";
-import { createStore, defaultOrgId, persistAiProviders, persistAsteriskConfigs, persistDialogflowConfigs, sampleGraph } from "./data.js";
+import { createStore, defaultOrgId, persistAiProviders, persistAsteriskConfigs, persistDialogflowConfigs, persistFlows, persistPrompts, sampleGraph } from "./data.js";
 import { decryptSecret, encryptSecret, maskSecret } from "./common/crypto/encryption.js";
 import { logger } from "./common/logger/logger.js";
-import { createAiProviderAdapter } from "./modules/ai-providers/adapters.js";
+import { createAiProviderAdapter, getAiProviderBaseUrl, listAiProviderModels } from "./modules/ai-providers/adapters.js";
 import { changePassword, login, publicUser } from "./modules/auth/auth.service.js";
 import { validateFlow } from "./modules/flows/validation.js";
 import { simulateCall } from "./modules/runtime/runtime.service.js";
@@ -173,15 +173,58 @@ const aiProviderSchema = z.object({
   isActive: z.boolean().optional()
 });
 
+const aiProviderModelListSchema = z.object({
+  type: z.enum(["OPENAI", "GEMINI", "CLAUDE", "CUSTOM"]),
+  apiKey: z.string().optional(),
+  baseUrl: z.string().optional(),
+  timeoutMs: z.number().optional()
+});
+
+function normalizeAiProviderInput(body: z.infer<typeof aiProviderSchema>) {
+  if (body.type === "CUSTOM" && !body.baseUrl) {
+    throw new Error("Custom provider endpoint is required.");
+  }
+  return {
+    ...body,
+    baseUrl: getAiProviderBaseUrl(body.type, body.baseUrl)
+  };
+}
+
 app.get("/api/ai-providers", requireAuth, (_req, res) => {
   res.json(store.aiProviders.map(publicAiProvider));
 });
 
 app.post(
+  "/api/ai-providers/models",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const body = aiProviderModelListSchema.parse(req.body);
+    if (body.type === "CUSTOM") {
+      return res.status(400).json({ message: "Custom provider models must be entered manually. Model-list loading is available for OpenAI, Gemini, and Claude." });
+    }
+    const provider = {
+      id: "draft",
+      organizationId: defaultOrgId,
+      name: body.type,
+      type: body.type,
+      baseUrl: getAiProviderBaseUrl(body.type, body.baseUrl),
+      defaultModel: "",
+      encryptedApiKey: body.apiKey && body.apiKey !== "********" ? encryptSecret(body.apiKey) : undefined,
+      configJson: { timeoutMs: body.timeoutMs ?? 8000 },
+      isActive: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    const models = await listAiProviderModels(provider, body.apiKey);
+    res.json({ ok: true, type: body.type, baseUrl: provider.baseUrl, models });
+  })
+);
+
+app.post(
   "/api/ai-providers",
   requireAuth,
   asyncRoute(async (req, res) => {
-  const body = aiProviderSchema.parse(req.body);
+  const body = normalizeAiProviderInput(aiProviderSchema.parse(req.body));
   const provider = {
     id: `prov_${uuid().slice(0, 8)}`,
     organizationId: defaultOrgId,
@@ -211,7 +254,12 @@ app.patch(
     if (!provider) return res.status(404).json({ message: "AI provider not found" });
     if (body.name !== undefined) provider.name = body.name;
     if (body.type !== undefined) provider.type = body.type;
-    if (body.baseUrl !== undefined) provider.baseUrl = body.baseUrl;
+    if (body.type !== undefined || body.baseUrl !== undefined) {
+      if ((body.type ?? provider.type) === "CUSTOM" && !(body.baseUrl ?? provider.baseUrl)) {
+        throw new Error("Custom provider endpoint is required.");
+      }
+      provider.baseUrl = getAiProviderBaseUrl(body.type ?? provider.type, body.baseUrl ?? provider.baseUrl);
+    }
     if (body.defaultModel !== undefined) provider.defaultModel = body.defaultModel;
     if (body.configJson !== undefined) provider.configJson = body.configJson;
     if (body.isActive !== undefined) provider.isActive = body.isActive;
@@ -230,6 +278,28 @@ app.patch(
     });
     await persistAiProviders(store.aiProviders);
     res.json(publicAiProvider(provider));
+  })
+);
+
+app.post(
+  "/api/ai-providers/:id/models",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const body = z.object({ apiKey: z.string().optional(), timeoutMs: z.number().optional() }).parse(req.body);
+    const provider = store.aiProviders.find((item) => item.id === req.params.id);
+    if (!provider) return res.status(404).json({ message: "AI provider not found" });
+    if (provider.type === "CUSTOM") {
+      return res.status(400).json({ message: "Custom provider models must be entered manually. Model-list loading is available for OpenAI, Gemini, and Claude." });
+    }
+    const models = await listAiProviderModels(
+      {
+        ...provider,
+        baseUrl: getAiProviderBaseUrl(provider.type, provider.baseUrl),
+        configJson: { ...provider.configJson, timeoutMs: body.timeoutMs ?? provider.configJson.timeoutMs }
+      },
+      body.apiKey
+    );
+    res.json({ ok: true, providerId: provider.id, type: provider.type, baseUrl: getAiProviderBaseUrl(provider.type, provider.baseUrl), models });
   })
 );
 
@@ -266,31 +336,136 @@ app.post(
   })
 );
 
+const promptSchema = z.object({
+  name: z.string().min(1),
+  systemPrompt: z.string().min(1),
+  fallbackPrompt: z.string().min(1),
+  language: z.string().min(2).default("th-TH"),
+  isActive: z.boolean().optional()
+});
+
 app.get("/api/prompts", requireAuth, (_req, res) => res.json(store.prompts));
-app.post("/api/prompts/:id/test", requireAuth, (req, res) => res.json({ ok: true, promptId: req.params.id, response: "Prompt response is ready for a live caller." }));
+app.post(
+  "/api/prompts",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const body = promptSchema.parse(req.body);
+    const now = new Date().toISOString();
+    const prompt = {
+      id: `prompt_${uuid().slice(0, 8)}`,
+      organizationId: defaultOrgId,
+      name: body.name,
+      systemPrompt: body.systemPrompt,
+      fallbackPrompt: body.fallbackPrompt,
+      language: body.language,
+      version: 1,
+      isActive: body.isActive ?? true,
+      createdAt: now,
+      updatedAt: now
+    };
+    store.prompts.push(prompt);
+    store.auditLogs.push({ id: uuid(), organizationId: defaultOrgId, userId: (req as express.Request & { userId: string }).userId, action: "prompt.create", entityType: "PromptTemplate", entityId: prompt.id, createdAt: now });
+    await persistPrompts(store.prompts);
+    res.status(201).json(prompt);
+  })
+);
+app.patch(
+  "/api/prompts/:id",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const body = promptSchema.partial().parse(req.body);
+    const prompt = store.prompts.find((item) => item.id === req.params.id);
+    if (!prompt) return res.status(404).json({ message: "Prompt not found" });
+    if (body.name !== undefined) prompt.name = body.name;
+    if (body.systemPrompt !== undefined) prompt.systemPrompt = body.systemPrompt;
+    if (body.fallbackPrompt !== undefined) prompt.fallbackPrompt = body.fallbackPrompt;
+    if (body.language !== undefined) prompt.language = body.language;
+    if (body.isActive !== undefined) prompt.isActive = body.isActive;
+    prompt.version += 1;
+    prompt.updatedAt = new Date().toISOString();
+    store.auditLogs.push({ id: uuid(), organizationId: defaultOrgId, userId: (req as express.Request & { userId: string }).userId, action: "prompt.update", entityType: "PromptTemplate", entityId: prompt.id, createdAt: prompt.updatedAt });
+    await persistPrompts(store.prompts);
+    res.json(prompt);
+  })
+);
+app.delete(
+  "/api/prompts/:id",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const index = store.prompts.findIndex((item) => item.id === req.params.id);
+    if (index === -1) return res.status(404).json({ message: "Prompt not found" });
+    const [deleted] = store.prompts.splice(index, 1);
+    store.auditLogs.push({ id: uuid(), organizationId: defaultOrgId, userId: (req as express.Request & { userId: string }).userId, action: "prompt.delete", entityType: "PromptTemplate", entityId: deleted.id, createdAt: new Date().toISOString() });
+    await persistPrompts(store.prompts);
+    res.status(204).send();
+  })
+);
+app.post("/api/prompts/:id/test", requireAuth, (req, res) => {
+  const prompt = store.prompts.find((item) => item.id === req.params.id);
+  if (!prompt) return res.status(404).json({ message: "Prompt not found" });
+  res.json({ ok: true, promptId: prompt.id, response: prompt.fallbackPrompt || "Prompt is ready for live caller flow." });
+});
 
 app.get("/api/flows", requireAuth, (_req, res) => res.json(store.flows));
-app.post("/api/flows", requireAuth, (req, res) => {
-  const body = z.object({ name: z.string(), description: z.string().optional(), graphJson: z.any().default(sampleGraph) }).parse(req.body);
+const flowSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  graphJson: z.any().default(sampleGraph),
+  status: z.enum(["DRAFT", "PUBLISHED", "ARCHIVED"]).optional()
+});
+app.post(
+  "/api/flows",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+  const body = flowSchema.parse(req.body);
   const flow = {
     id: `flow_${uuid().slice(0, 8)}`,
     organizationId: defaultOrgId,
     name: body.name,
     description: body.description ?? "",
-    status: "DRAFT" as const,
+    status: body.status ?? "DRAFT" as const,
     graphJson: body.graphJson,
     createdBy: (req as express.Request & { userId: string }).userId,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
   store.flows.push(flow);
+    await persistFlows(store.flows);
   res.status(201).json(flow);
-});
+  })
+);
 app.get("/api/flows/:id", requireAuth, (req, res) => {
   const flow = store.flows.find((item) => item.id === req.params.id);
   if (!flow) return res.status(404).json({ message: "Flow not found" });
   res.json(flow);
 });
+app.patch(
+  "/api/flows/:id",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const body = flowSchema.partial().parse(req.body);
+    const flow = store.flows.find((item) => item.id === req.params.id);
+    if (!flow) return res.status(404).json({ message: "Flow not found" });
+    if (body.name !== undefined) flow.name = body.name;
+    if (body.description !== undefined) flow.description = body.description;
+    if (body.graphJson !== undefined) flow.graphJson = body.graphJson;
+    if (body.status !== undefined) flow.status = body.status;
+    flow.updatedAt = new Date().toISOString();
+    await persistFlows(store.flows);
+    res.json(flow);
+  })
+);
+app.delete(
+  "/api/flows/:id",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const index = store.flows.findIndex((item) => item.id === req.params.id);
+    if (index === -1) return res.status(404).json({ message: "Flow not found" });
+    store.flows.splice(index, 1);
+    await persistFlows(store.flows);
+    res.status(204).send();
+  })
+);
 app.post("/api/flows/:id/validate", requireAuth, (req, res) => {
   const flow = store.flows.find((item) => item.id === req.params.id);
   const graph = req.body?.graphJson ?? flow?.graphJson;
@@ -298,17 +473,23 @@ app.post("/api/flows/:id/validate", requireAuth, (req, res) => {
   if (flow) flow.validationJson = result;
   res.json(result);
 });
-app.post("/api/flows/:id/publish", requireAuth, (req, res) => {
+app.post(
+  "/api/flows/:id/publish",
+  requireAuth,
+  asyncRoute(async (req, res) => {
   const flow = store.flows.find((item) => item.id === req.params.id);
   if (!flow) return res.status(404).json({ message: "Flow not found" });
   const result = validateFlow(req.body?.graphJson ?? flow.graphJson);
   if (!result.valid) return res.status(400).json(result);
+  if (req.body?.graphJson) flow.graphJson = req.body.graphJson;
   flow.status = "PUBLISHED";
   flow.activeVersionId = flow.activeVersionId ?? `flowver_${uuid().slice(0, 8)}`;
   flow.validationJson = result;
   flow.updatedAt = new Date().toISOString();
+    await persistFlows(store.flows);
   res.json(flow);
-});
+  })
+);
 
 app.post(
   "/api/runtime/simulate-call",

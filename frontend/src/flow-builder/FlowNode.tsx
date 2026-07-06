@@ -1,4 +1,4 @@
-import { Bot, GitBranch, Hash, Phone, Play, Shield, Square } from "lucide-react";
+import { Activity, Bot, Clock, GitBranch, Hash, Phone, Play, Shield, Square, Wrench } from "lucide-react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 
 const iconMap = {
@@ -8,7 +8,10 @@ const iconMap = {
   condition: GitBranch,
   transfer: Phone,
   fallback: Shield,
-  hangup: Square
+  hangup: Square,
+  dtmfInput: Wrench,
+  businessHours: Clock,
+  webhook: Activity
 };
 
 const colorMap = {
@@ -18,7 +21,10 @@ const colorMap = {
   condition: "var(--amber)",
   transfer: "var(--indigo)",
   fallback: "var(--indigo)",
-  hangup: "var(--red)"
+  hangup: "var(--red)",
+  dtmfInput: "var(--indigo)",
+  businessHours: "var(--amber)",
+  webhook: "var(--violet)"
 };
 
 export function FlowNode({ data, selected, type }: NodeProps) {

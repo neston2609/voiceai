@@ -21,10 +21,12 @@ interface AppState {
   user: AuthUser | null;
   screen: Screen;
   selectedSession?: CallSession;
+  selectedFlowId?: string;
   latestLogs: ExecutionLog[];
   setUser: (user: AuthUser | null) => void;
   setScreen: (screen: Screen) => void;
   setSelectedSession: (session?: CallSession) => void;
+  setSelectedFlowId: (flowId?: string) => void;
   setLatestLogs: (logs: ExecutionLog[]) => void;
 }
 
@@ -35,5 +37,6 @@ export const useAppStore = create<AppState>((set) => ({
   setUser: (user) => set({ user }),
   setScreen: (screen) => set({ screen }),
   setSelectedSession: (selectedSession) => set({ selectedSession }),
+  setSelectedFlowId: (selectedFlowId) => set({ selectedFlowId }),
   setLatestLogs: (latestLogs) => set({ latestLogs })
 }));

@@ -1,23 +1,37 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Trash2 } from "lucide-react";
 import { api } from "../api/client";
 import { Badge } from "../components/Badge";
 import { useAppStore } from "../store/appStore";
 import type { CallFlow } from "../types/domain";
 
 export function FlowListPage() {
-  const setScreen = useAppStore((state) => state.setScreen);
+  const queryClient = useQueryClient();
+  const { setScreen, setSelectedFlowId } = useAppStore();
   const { data: flows = [] } = useQuery({ queryKey: ["flows"], queryFn: async () => (await api.get<CallFlow[]>("/flows")).data });
+
+  function openFlow(flowId?: string) {
+    setSelectedFlowId(flowId);
+    setScreen("builder");
+  }
+
+  async function deleteFlow(flowId: string, name: string) {
+    if (!window.confirm(`Delete flow "${name}"?`)) return;
+    await api.delete(`/flows/${flowId}`);
+    await queryClient.invalidateQueries({ queryKey: ["flows"] });
+  }
+
   return (
     <div className="page" style={{ maxWidth: 1180 }}>
       <div className="row-between" style={{ marginBottom: 16 }}>
         <div className="subtle" style={{ fontSize: 12.5 }}>Draft, published, and archived call flows</div>
-        <button className="btn primary" onClick={() => setScreen("builder")}>New flow</button>
+        <button className="btn primary" onClick={() => openFlow(undefined)}>New flow</button>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(300px,1fr))", gap: 16 }}>
         {flows.map((flow) => (
-          <button key={flow.id} className="panel" onClick={() => setScreen("builder")} style={{ padding: 17, textAlign: "left" }}>
+          <div key={flow.id} className="panel" style={{ padding: 17, textAlign: "left" }}>
             <div className="row-between">
-              <div style={{ fontWeight: 600, fontSize: 14 }}>{flow.name}</div>
+              <button onClick={() => openFlow(flow.id)} style={{ border: 0, background: "transparent", padding: 0, textAlign: "left", fontWeight: 600, fontSize: 14, color: "var(--ink)" }}>{flow.name}</button>
               <Badge tone={flow.status === "PUBLISHED" ? "green" : flow.status === "DRAFT" ? "amber" : "gray"}>{flow.status}</Badge>
             </div>
             <div className="muted" style={{ fontSize: 11.5, margin: "9px 0 14px" }}>{flow.description}</div>
@@ -26,7 +40,11 @@ export function FlowListPage() {
               <span>{flow.activeVersionId ?? "draft"}</span>
               <span>{new Date(flow.updatedAt).toLocaleDateString()}</span>
             </div>
-          </button>
+            <div className="inline" style={{ gap: 8, marginTop: 12 }}>
+              <button className="btn teal" onClick={() => openFlow(flow.id)}>Open builder</button>
+              <button className="btn danger" onClick={() => deleteFlow(flow.id, flow.name)}><Trash2 size={14} />Delete</button>
+            </div>
+          </div>
         ))}
         {flows.length === 0 ? <div className="panel muted" style={{ padding: 20 }}>No call flows found.</div> : null}
       </div>

@@ -1,6 +1,19 @@
 import type { AiProviderConfig } from "../../types.js";
 import { decryptSecret } from "../../common/crypto/encryption.js";
 
+export type StandardAiProviderType = "OPENAI" | "GEMINI" | "CLAUDE";
+
+export const STANDARD_AI_BASE_URLS: Record<StandardAiProviderType, string> = {
+  OPENAI: "https://api.openai.com/v1",
+  GEMINI: "https://generativelanguage.googleapis.com/v1beta",
+  CLAUDE: "https://api.anthropic.com/v1"
+};
+
+export type AiModelOption = {
+  id: string;
+  label: string;
+};
+
 export interface AiChatProvider {
   generateResponse(input: {
     systemPrompt: string;
@@ -40,6 +53,10 @@ function getNumber(value: unknown, fallback: number) {
 }
 
 async function postJson(url: string, init: RequestInit, timeoutMs: number) {
+  return requestJson(url, init, timeoutMs);
+}
+
+async function requestJson(url: string, init: RequestInit, timeoutMs: number) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -56,13 +73,29 @@ async function postJson(url: string, init: RequestInit, timeoutMs: number) {
   }
 }
 
+export function getAiProviderBaseUrl(type: AiProviderConfig["type"], baseUrl?: string) {
+  if (type === "OPENAI" || type === "GEMINI" || type === "CLAUDE") {
+    return STANDARD_AI_BASE_URLS[type];
+  }
+  return baseUrl;
+}
+
+function normalizeBaseUrl(baseUrl: string) {
+  return baseUrl.replace(/\/+$/, "");
+}
+
+function getProviderApiKey(config: AiProviderConfig, overrideApiKey?: string) {
+  if (overrideApiKey && overrideApiKey !== "********") return overrideApiKey;
+  return config.encryptedApiKey ? decryptSecret(config.encryptedApiKey) : undefined;
+}
+
 abstract class BaseHttpAiProviderAdapter implements AiChatProvider {
   protected readonly runtime: ProviderRuntimeConfig;
 
   constructor(protected readonly config: AiProviderConfig) {
     this.runtime = {
       apiKey: config.encryptedApiKey ? decryptSecret(config.encryptedApiKey) : undefined,
-      baseUrl: config.baseUrl,
+      baseUrl: getAiProviderBaseUrl(config.type, config.baseUrl),
       timeoutMs: getNumber(config.configJson.timeoutMs, 8000)
     };
   }
@@ -81,8 +114,9 @@ export class OpenAiProviderAdapter extends BaseHttpAiProviderAdapter {
   async generateResponse(input: Parameters<AiChatProvider["generateResponse"]>[0]) {
     const started = Date.now();
     const apiKey = this.requireApiKey();
+    const baseUrl = normalizeBaseUrl(this.runtime.baseUrl ?? STANDARD_AI_BASE_URLS.OPENAI);
     const json = await postJson(
-      `${this.runtime.baseUrl ?? "https://api.openai.com/v1"}/chat/completions`,
+      `${baseUrl}/chat/completions`,
       {
         method: "POST",
         headers: {
@@ -115,9 +149,10 @@ export class GeminiProviderAdapter extends BaseHttpAiProviderAdapter {
   async generateResponse(input: Parameters<AiChatProvider["generateResponse"]>[0]) {
     const started = Date.now();
     const apiKey = this.requireApiKey();
-    const baseUrl = this.runtime.baseUrl ?? "https://generativelanguage.googleapis.com/v1beta";
+    const baseUrl = normalizeBaseUrl(this.runtime.baseUrl ?? STANDARD_AI_BASE_URLS.GEMINI);
+    const model = input.model.replace(/^models\//, "");
     const json = await postJson(
-      `${baseUrl}/models/${encodeURIComponent(input.model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
+      `${baseUrl}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -145,8 +180,9 @@ export class ClaudeProviderAdapter extends BaseHttpAiProviderAdapter {
   async generateResponse(input: Parameters<AiChatProvider["generateResponse"]>[0]) {
     const started = Date.now();
     const apiKey = this.requireApiKey();
+    const baseUrl = normalizeBaseUrl(this.runtime.baseUrl ?? STANDARD_AI_BASE_URLS.CLAUDE);
     const json = await postJson(
-      `${this.runtime.baseUrl ?? "https://api.anthropic.com/v1"}/messages`,
+      `${baseUrl}/messages`,
       {
         method: "POST",
         headers: {
@@ -203,6 +239,72 @@ export class CustomHttpProviderAdapter extends BaseHttpAiProviderAdapter {
       latencyMs: Date.now() - started
     };
   }
+}
+
+export async function listAiProviderModels(config: AiProviderConfig, overrideApiKey?: string): Promise<AiModelOption[]> {
+  const apiKey = getProviderApiKey(config, overrideApiKey);
+  const timeoutMs = getNumber(config.configJson.timeoutMs, 8000);
+
+  if (config.type === "CUSTOM") {
+    throw new Error("Custom provider models must be entered manually because custom APIs do not share one standard model-list endpoint.");
+  }
+  if (config.type === "MOCK") {
+    throw new Error("Mock providers do not expose live model lists.");
+  }
+  if (!apiKey) {
+    throw new Error(`${config.name} API key is not configured`);
+  }
+
+  if (config.type === "OPENAI") {
+    const json = await requestJson(
+      `${STANDARD_AI_BASE_URLS.OPENAI}/models`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          Accept: "application/json"
+        }
+      },
+      timeoutMs
+    ) as { data?: Array<{ id?: string }> };
+    return (json.data ?? [])
+      .map((model) => model.id)
+      .filter((id): id is string => Boolean(id))
+      .sort()
+      .map((id) => ({ id, label: id }));
+  }
+
+  if (config.type === "GEMINI") {
+    const json = await requestJson(
+      `${STANDARD_AI_BASE_URLS.GEMINI}/models?key=${encodeURIComponent(apiKey)}`,
+      { method: "GET", headers: { Accept: "application/json" } },
+      timeoutMs
+    ) as { models?: Array<{ name?: string; displayName?: string; supportedGenerationMethods?: string[] }> };
+    return (json.models ?? [])
+      .filter((model) => model.name && (model.supportedGenerationMethods ?? []).includes("generateContent"))
+      .map((model) => {
+        const id = String(model.name).replace(/^models\//, "");
+        return { id, label: model.displayName ? `${model.displayName} (${id})` : id };
+      })
+      .sort((left, right) => left.id.localeCompare(right.id));
+  }
+
+  const json = await requestJson(
+    `${STANDARD_AI_BASE_URLS.CLAUDE}/models`,
+    {
+      method: "GET",
+      headers: {
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        Accept: "application/json"
+      }
+    },
+    timeoutMs
+  ) as { data?: Array<{ id?: string; display_name?: string }> };
+  return (json.data ?? [])
+    .map((model) => model.id ? { id: model.id, label: model.display_name ? `${model.display_name} (${model.id})` : model.id } : null)
+    .filter((model): model is AiModelOption => Boolean(model))
+    .sort((left, right) => left.id.localeCompare(right.id));
 }
 
 export function createAiProviderAdapter(config: AiProviderConfig): AiChatProvider {

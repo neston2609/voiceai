@@ -75,32 +75,6 @@ export const pageMeta: Record<Screen, [string, string]> = {
   backup: ["Administration", "Backup & maintenance"]
 };
 
-export const kpis = [
-  { label: "Total calls", value: "3,842", sub: "this week", delta: "+12%", tone: "green" },
-  { label: "Bot resolved", value: "71%", sub: "2,728 calls", delta: "+4%", tone: "green" },
-  { label: "Avg duration", value: "1m 52s", sub: "per call", delta: "-8s", tone: "green" },
-  { label: "AI response", value: "0.9s", sub: "p50 latency", delta: "+0.1s", tone: "red" }
-];
-
-export const callChart = [
-  { day: "Mon", resolved: 96, escalated: 34, failed: 12 },
-  { day: "Tue", resolved: 110, escalated: 28, failed: 9 },
-  { day: "Wed", resolved: 88, escalated: 40, failed: 16 },
-  { day: "Thu", resolved: 120, escalated: 24, failed: 8 },
-  { day: "Fri", resolved: 104, escalated: 36, failed: 14 },
-  { day: "Sat", resolved: 70, escalated: 20, failed: 6 },
-  { day: "Sun", resolved: 82, escalated: 26, failed: 10 }
-];
-
-export const flows = [
-  { name: "Inbound Support Bot", desc: "Main support line - AI + IVR + escalate", status: "Published", tone: "green", nodes: 12, ver: "3", updated: "2d ago" },
-  { name: "Billing IVR", desc: "Payments and invoice self-service", status: "Published", tone: "green", nodes: 9, ver: "2", updated: "5d ago" },
-  { name: "After-hours Router", desc: "Business hours to voicemail or queue", status: "Draft", tone: "amber", nodes: 6, ver: "1", updated: "1h ago" },
-  { name: "Sales Qualifier", desc: "Lead capture with CRM webhook", status: "Draft", tone: "amber", nodes: 8, ver: "1", updated: "3d ago" },
-  { name: "Outage Notice", desc: "Static message and callback opt-in", status: "Published", tone: "green", nodes: 4, ver: "1", updated: "1w ago" },
-  { name: "Survey Bot", desc: "Post-call CSAT collection", status: "Archived", tone: "gray", nodes: 5, ver: "2", updated: "2w ago" }
-];
-
 export const palette = [
   { cat: "Basic", items: [{ label: "Start", icon: Play, tone: "green" }, { label: "Hangup", icon: Phone, tone: "red" }] },
   { cat: "AI & Voice", items: [{ label: "Voice Bot", icon: Bot, tone: "teal" }] },
@@ -108,20 +82,6 @@ export const palette = [
   { cat: "Logic", items: [{ label: "Condition", icon: GitBranch, tone: "amber" }, { label: "Business Hours", icon: Clock, tone: "amber" }] },
   { cat: "Integration", items: [{ label: "Webhook / API", icon: Activity, tone: "violet" }] },
   { cat: "Routing", items: [{ label: "Transfer", icon: Phone, tone: "indigo" }, { label: "Fallback", icon: Shield, tone: "indigo" }] }
-];
-
-export const providerCards = [
-  { name: "OpenAI", short: "AI", model: "gpt-4o", state: "Active", tone: "green", logo: "#0B7A5E" },
-  { name: "Gemini", short: "G", model: "gemini-1.5-pro", state: "Standby", tone: "gray", logo: "#3B6CF6" },
-  { name: "Claude", short: "C", model: "claude-3.5", state: "Standby", tone: "gray", logo: "#C96442" },
-  { name: "Custom API", short: "{}", model: "Not configured", state: "Not set", tone: "gray", logo: "#54607A" }
-];
-
-export const prompts = [
-  { name: "Support Bot - System", meta: "v4 - active", tag: "System", tone: "indigo" },
-  { name: "Support Bot - Fallback", meta: "v2", tag: "Fallback", tone: "amber" },
-  { name: "Billing IVR - System", meta: "v3", tag: "System", tone: "indigo" },
-  { name: "Sales Qualifier", meta: "v1 - draft", tag: "Draft", tone: "gray" }
 ];
 
 export const users = [

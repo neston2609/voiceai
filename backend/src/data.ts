@@ -21,6 +21,8 @@ export const defaultUserId = "usr_admin";
 const asteriskConfigPath = path.join(process.cwd(), "runtime-data", "asterisk-configs.json");
 const aiProviderConfigPath = path.join(process.cwd(), "runtime-data", "ai-providers.json");
 const dialogflowConfigPath = path.join(process.cwd(), "runtime-data", "dialogflow-configs.json");
+const promptConfigPath = path.join(process.cwd(), "runtime-data", "prompts.json");
+const flowConfigPath = path.join(process.cwd(), "runtime-data", "flows.json");
 
 type StoredAsteriskConfig = {
   id: string;
@@ -167,6 +169,50 @@ export async function createStore(): Promise<Store> {
     dialogflowConfigs = defaultDialogflowConfigs;
   }
 
+  const defaultPrompts: PromptTemplate[] = [
+    {
+      id: "prompt_support",
+      organizationId: defaultOrgId,
+      name: "Support Bot - System",
+      systemPrompt: "คุณคือผู้ช่วยเสียงภาษาไทยสำหรับรับสายลูกค้า ตอบให้กระชับ สุภาพ และโอนหาเจ้าหน้าที่เมื่อไม่มั่นใจหรือผู้โทรร้องขอ",
+      fallbackPrompt: "ขอโทษค่ะ ฉันยังไม่เข้าใจ สามารถโอนสายไปยังเมนูหลักหรือเจ้าหน้าที่ได้ค่ะ",
+      language: "th-TH",
+      version: 4,
+      isActive: true,
+      createdAt,
+      updatedAt: createdAt
+    }
+  ];
+
+  let prompts = defaultPrompts;
+  try {
+    prompts = JSON.parse(await readFile(promptConfigPath, "utf8")) as PromptTemplate[];
+  } catch {
+    prompts = defaultPrompts;
+  }
+
+  const defaultFlows: CallFlow[] = [
+    {
+      id: "flow_inbound_support",
+      organizationId: defaultOrgId,
+      name: "Inbound Support Bot",
+      description: "Main support line with AI, IVR fallback, and transfer.",
+      status: "PUBLISHED",
+      activeVersionId: "flowver_support_v3",
+      graphJson: sampleGraph,
+      createdBy: defaultUserId,
+      createdAt,
+      updatedAt: createdAt
+    }
+  ];
+
+  let flows = defaultFlows;
+  try {
+    flows = JSON.parse(await readFile(flowConfigPath, "utf8")) as CallFlow[];
+  } catch {
+    flows = defaultFlows;
+  }
+
   return {
     organizations: [{ id: defaultOrgId, name: "Default Organization", slug: "default", isActive: true, createdAt, updatedAt: createdAt }],
     users: [
@@ -186,34 +232,8 @@ export async function createStore(): Promise<Store> {
     ],
     aiProviders,
     dialogflowConfigs,
-    prompts: [
-      {
-        id: "prompt_support",
-        organizationId: defaultOrgId,
-        name: "Support Bot - System",
-        systemPrompt: "คุณคือผู้ช่วยเสียงภาษาไทยสำหรับรับสายลูกค้า ตอบให้กระชับ สุภาพ และโอนหาเจ้าหน้าที่เมื่อไม่มั่นใจหรือผู้โทรร้องขอ",
-        fallbackPrompt: "ขอโทษค่ะ ฉันยังไม่เข้าใจ สามารถโอนสายไปยังเมนูหลักหรือเจ้าหน้าที่ได้ค่ะ",
-        language: "th-TH",
-        version: 4,
-        isActive: true,
-        createdAt,
-        updatedAt: createdAt
-      }
-    ],
-    flows: [
-      {
-        id: "flow_inbound_support",
-        organizationId: defaultOrgId,
-        name: "Inbound Support Bot",
-        description: "Main support line with AI, IVR fallback, and transfer.",
-        status: "PUBLISHED",
-        activeVersionId: "flowver_support_v3",
-        graphJson: sampleGraph,
-        createdBy: defaultUserId,
-        createdAt,
-        updatedAt: createdAt
-      }
-    ],
+    prompts,
+    flows,
     sessions: [],
     executionLogs: [],
     transcripts: [],
@@ -247,4 +267,14 @@ export async function persistAiProviders(configs: AiProviderConfig[]) {
 export async function persistDialogflowConfigs(configs: DialogflowConfig[]) {
   await mkdir(path.dirname(dialogflowConfigPath), { recursive: true });
   await writeFile(dialogflowConfigPath, `${JSON.stringify(configs, null, 2)}\n`, "utf8");
+}
+
+export async function persistPrompts(configs: PromptTemplate[]) {
+  await mkdir(path.dirname(promptConfigPath), { recursive: true });
+  await writeFile(promptConfigPath, `${JSON.stringify(configs, null, 2)}\n`, "utf8");
+}
+
+export async function persistFlows(configs: CallFlow[]) {
+  await mkdir(path.dirname(flowConfigPath), { recursive: true });
+  await writeFile(flowConfigPath, `${JSON.stringify(configs, null, 2)}\n`, "utf8");
 }
