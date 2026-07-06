@@ -4,6 +4,15 @@ import { Mic } from "lucide-react";
 import { api, saveTokens } from "../api/client";
 import { useAppStore } from "../store/appStore";
 
+function loginErrorMessage(error: unknown) {
+  if (typeof error === "object" && error !== null && "response" in error) {
+    const response = (error as { response?: { data?: { message?: string }; status?: number } }).response;
+    if (response?.status === 401) return "Invalid email or password.";
+    if (response?.data?.message) return response.data.message;
+  }
+  return error instanceof Error ? error.message : "Login failed";
+}
+
 export function LoginPage() {
   const setUser = useAppStore((state) => state.setUser);
   const [email, setEmail] = useState("");
@@ -20,7 +29,7 @@ export function LoginPage() {
       saveTokens(data.accessToken, data.refreshToken);
       setUser(data.user);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed");
+      setError(loginErrorMessage(err));
     } finally {
       setLoading(false);
     }
