@@ -12,7 +12,7 @@ import { logger } from "./common/logger/logger.js";
 import { createAiProviderAdapter, getAiProviderBaseUrl, listAiProviderModels } from "./modules/ai-providers/adapters.js";
 import { changePassword, login, publicUser } from "./modules/auth/auth.service.js";
 import { validateFlow } from "./modules/flows/validation.js";
-import { chunkText, crawlWebsiteText, extractFileText, loadDatabaseText } from "./modules/knowledge/knowledge.service.js";
+import { chunkText, crawlWebsiteText, extractFileText, loadDatabaseText, retrieveKnowledgeContext } from "./modules/knowledge/knowledge.service.js";
 import { simulateCall } from "./modules/runtime/runtime.service.js";
 import { registerSipConnection } from "./modules/telephony/sip-registration.js";
 import { startSipVoiceBot } from "./modules/telephony/sip-voice-bridge.js";
@@ -419,11 +419,68 @@ app.delete(
     res.status(204).send();
   })
 );
-app.post("/api/prompts/:id/test", requireAuth, (req, res) => {
-  const prompt = store.prompts.find((item) => item.id === req.params.id);
-  if (!prompt) return res.status(404).json({ message: "Prompt not found" });
-  res.json({ ok: true, promptId: prompt.id, response: prompt.fallbackPrompt || "Prompt is ready for live caller flow." });
-});
+app.post(
+  "/api/prompts/:id/test",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const body = z.object({
+      question: z.string().min(1),
+      aiProviderId: z.string().optional(),
+      model: z.string().optional(),
+      systemPrompt: z.string().min(1).optional(),
+      fallbackPrompt: z.string().min(1).optional(),
+      language: z.string().min(2).optional(),
+      knowledgeBaseIds: z.array(z.string()).optional()
+    }).parse(req.body);
+    const prompt = store.prompts.find((item) => item.id === req.params.id);
+    if (!prompt) return res.status(404).json({ message: "Prompt not found" });
+    const testPrompt = {
+      ...prompt,
+      systemPrompt: body.systemPrompt ?? prompt.systemPrompt,
+      fallbackPrompt: body.fallbackPrompt ?? prompt.fallbackPrompt,
+      language: body.language ?? prompt.language,
+      knowledgeBaseIds: body.knowledgeBaseIds ?? prompt.knowledgeBaseIds
+    };
+    const aiProvider = body.aiProviderId
+      ? store.aiProviders.find((item) => item.id === body.aiProviderId && item.isActive)
+      : store.aiProviders.find((item) => item.isActive && item.type !== "MOCK" && item.encryptedApiKey) ?? store.aiProviders.find((item) => item.isActive);
+    if (!aiProvider) return res.status(400).json({ message: "No active AI provider is configured." });
+    if (aiProvider.type === "MOCK") return res.status(400).json({ message: "Prompt test requires a live AI provider." });
+    const model = body.model?.trim() || aiProvider.defaultModel?.trim();
+    if (!model) return res.status(400).json({ message: "Select an AI model before testing this prompt." });
+    const knowledgeContext = retrieveKnowledgeContext(store.knowledgeBases, testPrompt.knowledgeBaseIds, body.question);
+    const systemPrompt = knowledgeContext
+      ? `${testPrompt.systemPrompt}\n\nUse the following knowledge base context when relevant. If the answer is not in the context, say that you do not have enough information and continue politely.\n\n${knowledgeContext}`
+      : testPrompt.systemPrompt;
+    const started = Date.now();
+    try {
+      const response = await createAiProviderAdapter(aiProvider).generateResponse({
+        systemPrompt,
+        userText: body.question,
+        conversationHistory: [],
+        model,
+        temperature: typeof aiProvider.configJson.temperature === "number" ? aiProvider.configJson.temperature : 0.4,
+        maxTokens: typeof aiProvider.configJson.maxTokens === "number" ? aiProvider.configJson.maxTokens : 300,
+        metadata: { promptId: prompt.id, knowledgeBaseIds: testPrompt.knowledgeBaseIds ?? [] }
+      });
+      res.json({
+        ok: true,
+        promptId: prompt.id,
+        question: body.question,
+        response: response.text,
+        latencyMs: response.latencyMs || Date.now() - started,
+        providerId: aiProvider.id,
+        providerName: aiProvider.name,
+        model,
+        knowledgeBaseIds: testPrompt.knowledgeBaseIds ?? [],
+        knowledgeContextUsed: Boolean(knowledgeContext)
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Prompt test failed";
+      res.status(502).json({ ok: false, mode: "live", promptId: prompt.id, providerId: aiProvider.id, model, message });
+    }
+  })
+);
 
 app.get("/api/flows", requireAuth, (_req, res) => res.json(store.flows));
 const flowSchema = z.object({

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Database, FileText, Globe2, Mic, Phone, Plus, Save, Shield, Trash2, Upload } from "lucide-react";
+import { Database, FileText, Globe2, Mic, Phone, Plus, RefreshCw, Save, Shield, Trash2, Upload } from "lucide-react";
 import { api } from "../api/client";
 import { Badge } from "../components/Badge";
 import { users } from "../data/mock";
@@ -388,6 +388,8 @@ export function PromptsPage() {
     updatedAt: string;
   };
   type KnowledgeBase = { id: string; name: string; sourceType: "TEXT" | "FILE" | "DATABASE" | "WEBSITE"; status: string; chunks: Array<{ id: string }>; errorMessage?: string };
+  type AiProvider = { id: string; name: string; type: "OPENAI" | "GEMINI" | "CLAUDE" | "CUSTOM" | "MOCK"; defaultModel?: string; hasApiKey?: boolean };
+  type ModelOption = { id: string; label: string };
   type PromptForm = Omit<PromptTemplate, "id" | "version" | "updatedAt"> & { id?: string; version?: number; updatedAt?: string };
 
   const emptyPrompt = (): PromptForm => ({
@@ -401,14 +403,23 @@ export function PromptsPage() {
 
   const [items, setItems] = useState<PromptTemplate[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+  const [aiProviders, setAiProviders] = useState<AiProvider[]>([]);
+  const [modelOptionsByProvider, setModelOptionsByProvider] = useState<Record<string, ModelOption[]>>({});
   const [kbToAdd, setKbToAdd] = useState("");
   const [form, setForm] = useState<PromptForm>(emptyPrompt());
+  const [testQuestion, setTestQuestion] = useState("ลูกค้าถามว่า: ต้องการทราบข้อมูลสินค้าและวิธีติดต่อเจ้าหน้าที่");
+  const [testProviderId, setTestProviderId] = useState("");
+  const [testModel, setTestModel] = useState("");
+  const [testAnswer, setTestAnswer] = useState("");
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [testingPrompt, setTestingPrompt] = useState(false);
   const [result, setResult] = useState("");
   const [resultTone, setResultTone] = useState<"green" | "amber" | "red">("green");
 
   useEffect(() => {
     loadPrompts();
     loadKnowledgeBases();
+    loadAiProviders();
   }, []);
 
   async function loadPrompts() {
@@ -428,6 +439,20 @@ export function PromptsPage() {
       setKnowledgeBases(data);
     } catch {
       setKnowledgeBases([]);
+    }
+  }
+
+  async function loadAiProviders() {
+    try {
+      const { data } = await api.get<AiProvider[]>("/ai-providers");
+      setAiProviders(data);
+      const first = data.find((provider) => provider.hasApiKey) ?? data[0];
+      if (first) {
+        setTestProviderId(first.id);
+        setTestModel(first.defaultModel ?? "");
+      }
+    } catch {
+      setAiProviders([]);
     }
   }
 
@@ -489,13 +514,65 @@ export function PromptsPage() {
       setResult("Save this prompt before testing.");
       return;
     }
+    if (!testQuestion.trim()) {
+      setResultTone("amber");
+      setResult("Enter a test question first.");
+      return;
+    }
     try {
-      const { data } = await api.post(`/prompts/${form.id}/test`);
+      setTestingPrompt(true);
+      setTestAnswer("");
+      const { data } = await api.post(`/prompts/${form.id}/test`, {
+        question: testQuestion,
+        aiProviderId: testProviderId || undefined,
+        model: testModel || undefined,
+        systemPrompt: form.systemPrompt,
+        fallbackPrompt: form.fallbackPrompt,
+        language: form.language,
+        knowledgeBaseIds: form.knowledgeBaseIds ?? []
+      });
       setResultTone(data.ok ? "green" : "red");
-      setResult(data.response ?? "Prompt test completed");
+      setResult(`${data.providerName ?? "AI provider"} / ${data.model ?? "model"} / ${data.latencyMs ?? 0}ms`);
+      setTestAnswer(data.response ?? "Prompt test completed");
     } catch (error: unknown) {
       setResultTone("red");
       setResult(getApiMessage(error, "Prompt test failed"));
+    } finally {
+      setTestingPrompt(false);
+    }
+  }
+
+  async function loadTestModels(providerId = testProviderId) {
+    if (!providerId) return;
+    const provider = aiProviders.find((item) => item.id === providerId);
+    if (provider?.type === "CUSTOM") {
+      setResultTone("amber");
+      setResult("Custom providers do not expose a standard model-list API. Enter a model in Builder for real calls.");
+      return;
+    }
+    if (provider?.type === "MOCK") {
+      setResultTone("amber");
+      setResult("Mock providers cannot be used for live prompt tests.");
+      return;
+    }
+    const cached = modelOptionsByProvider[providerId];
+    if (cached) {
+      if (!testModel && cached[0]?.id) setTestModel(cached[0].id);
+      return;
+    }
+    try {
+      setLoadingModels(true);
+      const { data } = await api.post(`/ai-providers/${providerId}/models`, {});
+      const models = (data.models ?? []) as ModelOption[];
+      setModelOptionsByProvider((current) => ({ ...current, [providerId]: models }));
+      if (models[0]?.id) setTestModel(models[0].id);
+      setResultTone("green");
+      setResult(`Loaded ${models.length} models`);
+    } catch (error: unknown) {
+      setResultTone("red");
+      setResult(getApiMessage(error, "Could not load AI models"));
+    } finally {
+      setLoadingModels(false);
     }
   }
 
@@ -512,6 +589,12 @@ export function PromptsPage() {
   function removeKnowledgeBase(id: string) {
     setForm((current) => ({ ...current, knowledgeBaseIds: (current.knowledgeBaseIds ?? []).filter((item) => item !== id) }));
   }
+
+  const selectedProvider = aiProviders.find((provider) => provider.id === testProviderId);
+  const selectedModelOptions = testProviderId ? modelOptionsByProvider[testProviderId] ?? [] : [];
+  const modelOptions = testModel && !selectedModelOptions.some((model) => model.id === testModel)
+    ? [{ id: testModel, label: testModel }, ...selectedModelOptions]
+    : selectedModelOptions;
 
   return (
     <div className="page" style={{ maxWidth: 1180 }}>
@@ -592,8 +675,44 @@ export function PromptsPage() {
                 {(form.knowledgeBaseIds ?? []).length === 0 ? <div className="muted" style={{ fontSize: 11.5 }}>No KB selected for this prompt.</div> : null}
               </div>
             </div>
+            <div className="panel" style={{ marginTop: 16, padding: 14, background: "var(--surface2)" }}>
+              <div className="row-between" style={{ marginBottom: 10 }}>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>Test prompt</div>
+                <Badge tone={selectedProvider?.hasApiKey ? "green" : "amber"}>{selectedProvider?.hasApiKey ? "Live key" : "Needs key"}</Badge>
+              </div>
+              <label className="label" htmlFor="prompt-test-question">Test question</label>
+              <textarea id="prompt-test-question" className="textarea mono" rows={4} value={testQuestion} onChange={(event) => setTestQuestion(event.target.value)} />
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
+                <div>
+                  <label className="label" htmlFor="prompt-test-provider">AI provider</label>
+                  <select id="prompt-test-provider" className="input" value={testProviderId} onChange={(event) => {
+                    const providerId = event.target.value;
+                    const provider = aiProviders.find((item) => item.id === providerId);
+                    setTestProviderId(providerId);
+                    setTestModel(provider?.defaultModel ?? "");
+                    setTestAnswer("");
+                  }}>
+                    {aiProviders.length ? aiProviders.map((provider) => (
+                      <option key={provider.id} value={provider.id}>{provider.name} / {provider.type}</option>
+                    )) : <option value="">No AI provider configured</option>}
+                  </select>
+                </div>
+                <div>
+                  <label className="label" htmlFor="prompt-test-model">Model</label>
+                  <select id="prompt-test-model" className="input" value={testModel} onChange={(event) => setTestModel(event.target.value)}>
+                    {modelOptions.length ? modelOptions.map((model) => (
+                      <option key={model.id} value={model.id}>{model.label || model.id}</option>
+                    )) : <option value="">{testModel ? testModel : "Load models first"}</option>}
+                  </select>
+                </div>
+              </div>
+              <div className="inline" style={{ gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+                <button className="btn" onClick={() => void loadTestModels()} disabled={!testProviderId || loadingModels || selectedProvider?.type === "CUSTOM" || selectedProvider?.type === "MOCK"}><RefreshCw size={14} />{loadingModels ? "Loading models" : "Load models"}</button>
+                <button className="btn teal" onClick={testPrompt} disabled={testingPrompt}><FileText size={14} />{testingPrompt ? "Testing" : "Test prompt"}</button>
+              </div>
+              {testAnswer ? <div className="panel mono" style={{ marginTop: 12, padding: 12, background: "var(--surface)", whiteSpace: "pre-wrap", fontSize: 12.5 }}>{testAnswer}</div> : null}
+            </div>
             <div className="inline" style={{ gap: 10, marginTop: 16, flexWrap: "wrap" }}>
-              <button className="btn teal" onClick={testPrompt}><FileText size={14} />Test prompt</button>
               <button className="btn danger" onClick={deletePrompt}><Trash2 size={14} />Delete</button>
               <button className="btn primary" onClick={savePrompt} style={{ marginLeft: "auto" }}><Save size={14} />Save prompt</button>
               {result ? <span className={`badge ${resultTone}`}>{result}</span> : null}
