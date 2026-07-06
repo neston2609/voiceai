@@ -1,0 +1,310 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  FLOW_DESIGNER
+  OPERATOR
+  VIEWER
+}
+
+enum FlowStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum SessionStatus {
+  ACTIVE
+  COMPLETED
+  FAILED
+}
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users                User[]
+  auditLogs            AuditLog[]
+  aiProviders          AiProvider[]
+  promptTemplates      PromptTemplate[]
+  dialogflowConfigs    DialogflowConfig[]
+  asteriskConfigs      AsteriskConfig[]
+  callFlows            CallFlow[]
+  callFlowVersions     CallFlowVersion[]
+  callSessions         CallSession[]
+  callExecutionLogs    CallExecutionLog[]
+  transcripts          Transcript[]
+  providerRequestLogs  ProviderRequestLog[]
+  systemSettings       SystemSetting[]
+  backupJobs           BackupJob[]
+}
+
+model User {
+  id                 String    @id @default(uuid())
+  organizationId     String
+  email              String    @unique
+  passwordHash       String
+  fullName           String
+  role               UserRole
+  isActive           Boolean   @default(true)
+  mustChangePassword Boolean   @default(true)
+  failedLoginCount   Int       @default(0)
+  lockedUntil        DateTime?
+  lastLoginAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  organization Organization   @relation(fields: [organizationId], references: [id])
+  refreshTokens RefreshToken[]
+  auditLogs     AuditLog[]
+  callFlows     CallFlow[]     @relation("CreatedFlows")
+  versions      CallFlowVersion[]
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AuditLog {
+  id            String   @id @default(uuid())
+  organizationId String
+  userId        String?
+  action        String
+  entityType    String
+  entityId      String?
+  beforeJson    Json?
+  afterJson     Json?
+  ipAddress     String?
+  userAgent     String?
+  correlationId String?
+  createdAt     DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  user         User?        @relation(fields: [userId], references: [id])
+}
+
+model AiProvider {
+  id              String   @id @default(uuid())
+  organizationId  String
+  name            String
+  type            String
+  baseUrl         String?
+  encryptedApiKey String?
+  defaultModel    String
+  configJson      Json
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  requestLogs  ProviderRequestLog[]
+}
+
+model PromptTemplate {
+  id             String   @id @default(uuid())
+  organizationId String
+  name           String
+  systemPrompt   String
+  fallbackPrompt String
+  language       String
+  version        Int
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+}
+
+model DialogflowConfig {
+  id                          String   @id @default(uuid())
+  organizationId              String
+  name                        String
+  projectId                   String
+  location                    String
+  agentId                     String
+  languageCode                String
+  voiceName                   String?
+  encryptedServiceAccountJson String?
+  configJson                  Json
+  isActive                    Boolean  @default(true)
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+}
+
+model AsteriskConfig {
+  id                       String   @id @default(uuid())
+  organizationId           String
+  name                     String
+  ariUrl                   String
+  encryptedUsername        String?
+  encryptedPassword        String?
+  appName                  String
+  sipTrunkName             String?
+  inboundContext           String?
+  botExtension             String?
+  fallbackIvrExtension     String?
+  defaultTransferExtension String?
+  configJson               Json
+  isActive                 Boolean  @default(true)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+}
+
+model CallFlow {
+  id              String     @id @default(uuid())
+  organizationId  String
+  name            String
+  description     String?
+  status          FlowStatus @default(DRAFT)
+  activeVersionId String?
+  createdBy       String
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  organization  Organization      @relation(fields: [organizationId], references: [id])
+  creator       User              @relation("CreatedFlows", fields: [createdBy], references: [id])
+  versions      CallFlowVersion[]
+  activeVersion CallFlowVersion?  @relation("ActiveVersion", fields: [activeVersionId], references: [id])
+}
+
+model CallFlowVersion {
+  id             String    @id @default(uuid())
+  organizationId String
+  callFlowId     String
+  version        Int
+  graphJson      Json
+  validationJson Json?
+  publishedBy    String?
+  publishedAt    DateTime?
+  createdAt      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  callFlow     CallFlow     @relation(fields: [callFlowId], references: [id])
+  activeFor    CallFlow[]   @relation("ActiveVersion")
+  publisher    User?        @relation(fields: [publishedBy], references: [id])
+  sessions     CallSession[]
+}
+
+model CallSession {
+  id              String        @id @default(uuid())
+  organizationId  String
+  callId          String
+  channelId       String
+  callerNumber    String
+  calledNumber    String
+  flowVersionId   String?
+  status          SessionStatus
+  startedAt       DateTime      @default(now())
+  endedAt         DateTime?
+  durationSeconds Int?
+  finalResult     String?
+  failureReason   String?
+  metadataJson    Json
+
+  organization Organization        @relation(fields: [organizationId], references: [id])
+  flowVersion  CallFlowVersion?    @relation(fields: [flowVersionId], references: [id])
+  logs         CallExecutionLog[]
+  transcripts  Transcript[]
+  requests     ProviderRequestLog[]
+}
+
+model CallExecutionLog {
+  id            String   @id @default(uuid())
+  organizationId String
+  callSessionId String
+  sequence      Int
+  nodeId        String
+  nodeType      String
+  eventType     String
+  inputJson     Json?
+  outputJson    Json?
+  latencyMs     Int?
+  status        String
+  errorMessage  String?
+  correlationId String?
+  createdAt     DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  callSession  CallSession  @relation(fields: [callSessionId], references: [id], onDelete: Cascade)
+}
+
+model Transcript {
+  id            String   @id @default(uuid())
+  organizationId String
+  callSessionId String
+  speaker       String
+  text          String
+  confidence    Float?
+  audioRef      String?
+  createdAt     DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  callSession  CallSession  @relation(fields: [callSessionId], references: [id], onDelete: Cascade)
+}
+
+model ProviderRequestLog {
+  id                String   @id @default(uuid())
+  organizationId    String
+  callSessionId     String?
+  providerId        String?
+  model             String
+  requestJsonMasked Json
+  responseJson      Json?
+  latencyMs         Int?
+  status            String
+  errorMessage      String?
+  createdAt         DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  callSession  CallSession? @relation(fields: [callSessionId], references: [id])
+  provider     AiProvider?  @relation(fields: [providerId], references: [id])
+}
+
+model SystemSetting {
+  id             String   @id @default(uuid())
+  organizationId String
+  key            String
+  valueJson      Json
+  encrypted      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  @@unique([organizationId, key])
+}
+
+model BackupJob {
+  id             String    @id @default(uuid())
+  organizationId String
+  jobType        String
+  status         String
+  startedAt      DateTime  @default(now())
+  endedAt        DateTime?
+  resultJson     Json?
+  errorMessage   String?
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+}
