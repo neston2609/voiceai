@@ -1036,6 +1036,27 @@ app.use((err: unknown, req: express.Request, res: express.Response, _next: expre
   res.status(message.includes("Invalid") ? 401 : 400).json({ message, correlationId: res.getHeader("x-correlation-id") });
 });
 
+async function registerActiveSipConnections() {
+  for (const connection of store.telephonyConnections.filter((item) => item.isActive && item.type === "SIP")) {
+    try {
+      const result = await startSipVoiceBot(connection, store);
+      connection.status = result.ok ? "registered" : "registration-failed";
+      connection.registeredAt = result.registeredAt;
+      connection.lastRegistrationMessage = result.message;
+      connection.updatedAt = new Date().toISOString();
+      await persistTelephonyConnections(store.telephonyConnections);
+      logger.info({ connectionId: connection.id, extension: connection.extension, ok: result.ok, message: result.message }, "SIP voice bot registration completed");
+    } catch (error) {
+      connection.status = "registration-failed";
+      connection.lastRegistrationMessage = error instanceof Error ? error.message : "SIP registration failed";
+      connection.updatedAt = new Date().toISOString();
+      await persistTelephonyConnections(store.telephonyConnections);
+      logger.warn({ err: error, connectionId: connection.id, extension: connection.extension }, "SIP voice bot registration failed");
+    }
+  }
+}
+
 app.listen(port, () => {
   logger.info({ port, mockMode: isMockMode() }, "Voice AI Bot backend started");
+  void registerActiveSipConnections();
 });
