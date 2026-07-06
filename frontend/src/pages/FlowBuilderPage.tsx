@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Controls,
@@ -19,7 +19,9 @@ import { FlowNode } from "../flow-builder/FlowNode";
 import { useAppStore } from "../store/appStore";
 import type { CallFlow } from "../types/domain";
 
-type SelectOption = { id: string; name: string; defaultModel?: string; version?: number };
+type ProviderOption = { id: string; name: string; type: "OPENAI" | "GEMINI" | "CLAUDE" | "CUSTOM" | "MOCK" };
+type SelectOption = { id: string; name: string; version?: number };
+type ModelOption = { id: string; label: string };
 type KnowledgeOption = { id: string; name: string; status: string; chunks?: unknown[] };
 type FlowMeta = { id?: string; name: string; description: string; status: "DRAFT" | "PUBLISHED" | "ARCHIVED" };
 
@@ -64,13 +66,23 @@ export function FlowBuilderPage() {
   const [edges, setEdges, onEdgesChange] = useEdgesState(defaultEdges);
   const [meta, setMeta] = useState<FlowMeta>({ name: "New Voice Flow", description: "Live voice bot flow", status: "DRAFT" });
   const [validation, setValidation] = useState<string>("Not validated");
-  const [providers, setProviders] = useState<SelectOption[]>([]);
+  const [providers, setProviders] = useState<ProviderOption[]>([]);
   const [prompts, setPrompts] = useState<SelectOption[]>([]);
   const [dialogflows, setDialogflows] = useState<SelectOption[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeOption[]>([]);
+  const [modelOptionsByProvider, setModelOptionsByProvider] = useState<Record<string, ModelOption[]>>({});
+  const [loadingModelsFor, setLoadingModelsFor] = useState("");
+  const [modelLoadError, setModelLoadError] = useState("");
   const nodeTypes = useMemo(() => nodeTypesByName, []);
 
   const selected = nodes.find((node) => node.selected) ?? nodes[0];
+  const selectedProviderId = selected?.type === "voiceBot" ? String(selected.data.aiProviderId ?? providers[0]?.id ?? "") : "";
+  const selectedModelValue = selected?.type === "voiceBot" ? String(selected.data.model ?? "") : "";
+  const selectedModelOptions = selectedProviderId ? modelOptionsByProvider[selectedProviderId] ?? [] : [];
+  const modelSelectOptions = selectedModelValue && !selectedModelOptions.some((model) => model.id === selectedModelValue)
+    ? [{ id: selectedModelValue, label: selectedModelValue }, ...selectedModelOptions]
+    : selectedModelOptions;
+  const selectedProvider = providers.find((provider) => provider.id === selectedProviderId);
 
   useEffect(() => {
     Promise.all([
@@ -79,7 +91,7 @@ export function FlowBuilderPage() {
       api.get("/dialogflow-configs"),
       api.get("/knowledge-bases")
     ]).then(([providerResponse, promptResponse, dialogflowResponse, knowledgeResponse]) => {
-      setProviders(providerResponse.data.map((item: { id: string; name: string; defaultModel?: string }) => ({ id: item.id, name: item.name, defaultModel: item.defaultModel })));
+      setProviders(providerResponse.data.map((item: { id: string; name: string; type: ProviderOption["type"] }) => ({ id: item.id, name: item.name, type: item.type })));
       setPrompts(promptResponse.data.map((item: { id: string; name: string; version?: number }) => ({ id: item.id, name: item.name, version: item.version })));
       setDialogflows(dialogflowResponse.data.map((item: { id: string; name: string }) => ({ id: item.id, name: item.name })));
       setKnowledgeBases(knowledgeResponse.data.map((item: KnowledgeOption) => ({ id: item.id, name: item.name, status: item.status, chunks: item.chunks })));
@@ -125,6 +137,43 @@ export function FlowBuilderPage() {
     setNodes((current) => current.map((node) => node.id === selected.id ? { ...node, data: { ...node.data, [field]: value } } : node));
   }
 
+  const loadProviderModels = useCallback(async (providerId: string) => {
+    if (!providerId) return [];
+    const provider = providers.find((item) => item.id === providerId);
+    setModelLoadError("");
+    if (provider?.type === "CUSTOM") {
+      setModelLoadError("Custom providers do not expose a standard model-list API.");
+      return [];
+    }
+    if (provider?.type === "MOCK") {
+      setModelLoadError("Mock providers do not expose live model lists.");
+      return [];
+    }
+    const cached = modelOptionsByProvider[providerId];
+    if (cached) return cached;
+    try {
+      setLoadingModelsFor(providerId);
+      const { data } = await api.post(`/ai-providers/${providerId}/models`, {});
+      const models = (data.models ?? []) as ModelOption[];
+      setModelOptionsByProvider((current) => ({ ...current, [providerId]: models }));
+      return models;
+    } catch (error: unknown) {
+      setModelLoadError(getErrorMessage(error, "Could not load models from the selected AI provider"));
+      return [];
+    } finally {
+      setLoadingModelsFor("");
+    }
+  }, [modelOptionsByProvider, providers]);
+
+  useEffect(() => {
+    if (selected?.type !== "voiceBot" || !selectedProviderId || modelOptionsByProvider[selectedProviderId]) return;
+    void loadProviderModels(selectedProviderId).then((models) => {
+      if (!String(selected.data.model ?? "").trim() && models[0]?.id) {
+        updateSelectedNode("model", models[0].id);
+      }
+    });
+  }, [loadProviderModels, modelOptionsByProvider, selected?.type, selectedProviderId]);
+
   function graphJson() {
     const firstProvider = providers[0];
     const firstPrompt = prompts[0];
@@ -135,7 +184,7 @@ export function FlowBuilderPage() {
           ...node.data,
           position: node.position,
           aiProviderId: node.type === "voiceBot" ? String(node.data.aiProviderId ?? firstProvider?.id ?? "") : undefined,
-          model: node.type === "voiceBot" ? String(node.data.model ?? firstProvider?.defaultModel ?? "gpt-4o") : undefined,
+          model: node.type === "voiceBot" ? String(node.data.model ?? "") : undefined,
           promptId: node.type === "voiceBot" ? String(node.data.promptId ?? firstPrompt?.id ?? "") : undefined,
           dialogflowConfigId: node.type === "voiceBot" ? String(node.data.dialogflowConfigId ?? firstDialogflow?.id ?? "") : undefined
         };
@@ -281,13 +330,23 @@ export function FlowBuilderPage() {
             {selected?.type === "voiceBot" ? (
               <>
                 <div style={{ height: 15 }} />
-                <SelectSetting label="AI provider" value={String(selected.data.aiProviderId ?? providers[0]?.id ?? "")} options={providers.map((item) => ({ value: item.id, label: `${item.name}${item.defaultModel ? ` - ${item.defaultModel}` : ""}` }))} onChange={(value) => {
-                  const provider = providers.find((item) => item.id === value);
+                <SelectSetting label="AI provider" value={selectedProviderId} options={providers.map((item) => ({ value: item.id, label: item.name }))} onChange={(value) => {
                   updateSelectedNode("aiProviderId", value);
-                  if (provider?.defaultModel) updateSelectedNode("model", provider.defaultModel);
+                  updateSelectedNode("model", "");
+                  void loadProviderModels(value).then((models) => {
+                    if (models[0]?.id) updateSelectedNode("model", models[0].id);
+                  });
                 }} />
                 <div style={{ height: 15 }} />
-                <input className="input" value={String(selected.data.model ?? providers[0]?.defaultModel ?? "")} onChange={(event) => updateSelectedNode("model", event.target.value)} />
+                <SelectSetting label="Model" value={selectedModelValue} options={modelSelectOptions.map((model) => ({ value: model.id, label: model.label || model.id }))} onChange={(value) => updateSelectedNode("model", value)} />
+                <div className="inline" style={{ gap: 8, marginTop: 8 }}>
+                  <button className="btn" onClick={() => void loadProviderModels(selectedProviderId).then((models) => {
+                    if (!selectedModelValue && models[0]?.id) updateSelectedNode("model", models[0].id);
+                  })} disabled={!selectedProviderId || loadingModelsFor === selectedProviderId || selectedProvider?.type === "CUSTOM" || selectedProvider?.type === "MOCK"}>
+                    {loadingModelsFor === selectedProviderId ? "Loading models" : "Refresh models"}
+                  </button>
+                  {modelLoadError ? <span className="badge amber">{modelLoadError}</span> : null}
+                </div>
                 <div style={{ height: 15 }} />
                 <SelectSetting label="System prompt" value={String(selected.data.promptId ?? prompts[0]?.id ?? "")} options={prompts.map((item) => ({ value: item.id, label: `${item.name} v${item.version ?? 1}` }))} onChange={(value) => updateSelectedNode("promptId", value)} />
                 <div style={{ height: 15 }} />

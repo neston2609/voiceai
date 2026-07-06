@@ -47,7 +47,7 @@ export interface AiProviderConfig {
   type: "OPENAI" | "GEMINI" | "CLAUDE" | "CUSTOM" | "MOCK";
   baseUrl?: string;
   encryptedApiKey?: string;
-  defaultModel: string;
+  defaultModel?: string;
   configJson: Record<string, unknown>;
   isActive: boolean;
   createdAt: string;

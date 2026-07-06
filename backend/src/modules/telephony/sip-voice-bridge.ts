@@ -296,7 +296,12 @@ async function handleInvite(parsed: ParsedSip, sipSocket: dgram.Socket, remote: 
       fulfillmentText: error instanceof Error ? error.message : "Dialogflow detectIntent failed",
       intentName: "dialogflow_error"
     }));
-    const nodeModel = typeof voicebotNode?.data.model === "string" ? voicebotNode.data.model : aiProvider.defaultModel;
+    const nodeModel = typeof voicebotNode?.data.model === "string" && voicebotNode.data.model.trim()
+      ? voicebotNode.data.model.trim()
+      : aiProvider.defaultModel?.trim();
+    if (!nodeModel) {
+      throw new Error("Select an AI model in Flow Builder before receiving SIP calls.");
+    }
     const nodeKnowledgeIds = Array.isArray(voicebotNode?.data.knowledgeBaseIds) ? voicebotNode.data.knowledgeBaseIds.filter((item): item is string => typeof item === "string") : prompt.knowledgeBaseIds;
     const knowledgeContext = retrieveKnowledgeContext(store.knowledgeBases, nodeKnowledgeIds, stt.text);
     const systemPrompt = knowledgeContext ? `${prompt.systemPrompt}\n\nKnowledge base context:\n${knowledgeContext}` : prompt.systemPrompt;

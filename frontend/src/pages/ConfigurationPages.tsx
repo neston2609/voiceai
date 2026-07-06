@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bot, FileText, Mic, Phone, Plus, RefreshCw, Save, Shield, Trash2, Upload } from "lucide-react";
+import { FileText, Mic, Phone, Plus, Save, Shield, Trash2, Upload } from "lucide-react";
 import { api } from "../api/client";
 import { Badge } from "../components/Badge";
 import { users } from "../data/mock";
@@ -11,7 +11,6 @@ export function ProvidersPage() {
     name?: string;
     type?: ProviderType;
     baseUrl?: string;
-    defaultModel?: string;
     hasApiKey?: boolean;
     configJson?: Record<string, unknown>;
     isActive?: boolean;
@@ -21,32 +20,22 @@ export function ProvidersPage() {
     name: string;
     type: ProviderType;
     baseUrl: string;
-    defaultModel: string;
     apiKey: string;
     temperature: string;
     maxTokens: string;
     timeoutMs: string;
     isActive: boolean;
   };
-  type ModelOption = { id: string; label: string };
-
   const standardBaseUrls: Record<Exclude<ProviderType, "CUSTOM">, string> = {
     OPENAI: "https://api.openai.com/v1",
     GEMINI: "https://generativelanguage.googleapis.com/v1beta",
     CLAUDE: "https://api.anthropic.com/v1"
-  };
-  const defaultModels: Record<ProviderType, string> = {
-    OPENAI: "gpt-4o",
-    GEMINI: "gemini-1.5-pro",
-    CLAUDE: "claude-3-5-sonnet-latest",
-    CUSTOM: ""
   };
 
   const newProviderForm = (type: ProviderType = "OPENAI"): ProviderForm => ({
     name: `${type === "CUSTOM" ? "Custom" : type} provider`,
     type,
     baseUrl: type === "CUSTOM" ? "" : standardBaseUrls[type],
-    defaultModel: defaultModels[type],
     apiKey: "",
     temperature: "0.4",
     maxTokens: "300",
@@ -58,8 +47,6 @@ export function ProvidersPage() {
   const [resultTone, setResultTone] = useState<"green" | "amber" | "red">("green");
   const [providers, setProviders] = useState<SavedProvider[]>([]);
   const [config, setConfig] = useState<ProviderForm>(newProviderForm());
-  const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
-  const [loadingModels, setLoadingModels] = useState(false);
 
   useEffect(() => {
     api.get("/ai-providers").then(({ data }) => {
@@ -80,7 +67,6 @@ export function ProvidersPage() {
       name: provider.name ?? `${type} provider`,
       type,
       baseUrl: provider.baseUrl ?? (type === "CUSTOM" ? "" : standardBaseUrls[type]),
-      defaultModel: provider.defaultModel ?? defaultModels[type],
       apiKey: provider.hasApiKey ? "********" : "",
       temperature: String(provider.configJson?.temperature ?? "0.4"),
       maxTokens: String(provider.configJson?.maxTokens ?? "300"),
@@ -91,13 +77,11 @@ export function ProvidersPage() {
 
   function selectProvider(provider: SavedProvider) {
     setConfig(mapProvider(provider));
-    setModelOptions([]);
     setResult("");
   }
 
   function startNewProvider() {
     setConfig(newProviderForm());
-    setModelOptions([]);
     setResult("");
   }
 
@@ -111,10 +95,8 @@ export function ProvidersPage() {
       ...current,
       type,
       name: current.id ? current.name : `${type === "CUSTOM" ? "Custom" : type} provider`,
-      baseUrl: type === "CUSTOM" ? "" : standardBaseUrls[type],
-      defaultModel: defaultModels[type]
+      baseUrl: type === "CUSTOM" ? "" : standardBaseUrls[type]
     }));
-    setModelOptions([]);
   }
 
   function providerPayload() {
@@ -122,7 +104,6 @@ export function ProvidersPage() {
       name: config.name,
       type: config.type,
       baseUrl: config.type === "CUSTOM" ? config.baseUrl || undefined : undefined,
-      defaultModel: config.defaultModel,
       apiKey: config.apiKey || undefined,
       configJson: {
         temperature: Number(config.temperature),
@@ -143,56 +124,10 @@ export function ProvidersPage() {
       });
       setConfig(mapProvider(data));
       setResultTone("green");
-      setResult(`Saved ${data.name} using ${data.defaultModel}`);
+      setResult(`Saved ${data.name}`);
     } catch (error: unknown) {
       setResultTone("red");
       setResult(getApiMessage(error, "Could not save AI provider"));
-    }
-  }
-
-  async function loadModels() {
-    if (config.type === "CUSTOM") {
-      setResultTone("amber");
-      setResult("Custom provider models are manual because custom endpoints do not share one model-list API.");
-      return;
-    }
-    try {
-      setLoadingModels(true);
-      const payload = {
-        type: config.type,
-        apiKey: config.apiKey && config.apiKey !== "********" ? config.apiKey : undefined,
-        timeoutMs: Number(config.timeoutMs)
-      };
-      const { data } = config.id
-        ? await api.post(`/ai-providers/${config.id}/models`, payload)
-        : await api.post("/ai-providers/models", payload);
-      setModelOptions(data.models ?? []);
-      if (!config.defaultModel && data.models?.[0]?.id) {
-        updateConfig("defaultModel", data.models[0].id);
-      }
-      setResultTone("green");
-      setResult(`Loaded ${data.models?.length ?? 0} live models from ${config.type}`);
-    } catch (error: unknown) {
-      setResultTone("red");
-      setResult(getApiMessage(error, "Could not load models from provider"));
-    } finally {
-      setLoadingModels(false);
-    }
-  }
-
-  async function testProvider() {
-    if (!config.id) {
-      setResultTone("amber");
-      setResult("Save this provider before testing the live request.");
-      return;
-    }
-    try {
-      const { data } = await api.post(`/ai-providers/${config.id}/test`);
-      setResultTone(data.ok ? "green" : "red");
-      setResult(`${data.message} ${data.latencyMs ?? 0}ms`);
-    } catch (error: unknown) {
-      setResultTone("red");
-      setResult(getApiMessage(error, "AI provider test failed"));
     }
   }
 
@@ -225,7 +160,7 @@ export function ProvidersPage() {
             >
               <div>
                 <div style={{ fontSize: 12.5, fontWeight: 600 }}>{provider.name}</div>
-                <div className="muted" style={{ fontSize: 10.5 }}>{provider.type} / {provider.defaultModel}</div>
+                <div className="muted" style={{ fontSize: 10.5 }}>{provider.type}</div>
               </div>
               <Badge tone={provider.hasApiKey ? "green" : "amber"}>{provider.hasApiKey ? "Key" : "No key"}</Badge>
             </button>
@@ -243,30 +178,16 @@ export function ProvidersPage() {
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
               <ControlledField label="Config name" value={config.name} onChange={(value) => updateConfig("name", value)} />
               <SelectField label="Provider" value={config.type} onChange={updateProviderType} options={["OPENAI", "GEMINI", "CLAUDE", "CUSTOM"]} />
-              {modelOptions.length ? (
-                <SelectField label="Model" value={config.defaultModel} onChange={(value) => updateConfig("defaultModel", value)} options={modelOptions.map((model) => model.id)} />
-              ) : (
-                <ControlledField label="Model" value={config.defaultModel} onChange={(value) => updateConfig("defaultModel", value)} />
-              )}
-              {config.type === "CUSTOM" ? (
-                <ControlledField label="Custom endpoint URL" value={config.baseUrl} onChange={(value) => updateConfig("baseUrl", value)} />
-              ) : (
-                <ReadOnlyField label="Standard endpoint" value={standardBaseUrls[config.type]} />
-              )}
+              {config.type === "CUSTOM" ? <ControlledField label="Custom endpoint URL" value={config.baseUrl} onChange={(value) => updateConfig("baseUrl", value)} /> : null}
               <ControlledField label="API key" value={config.apiKey} onChange={(value) => updateConfig("apiKey", value)} type="password" />
               <ControlledField label="Timeout ms" value={config.timeoutMs} onChange={(value) => updateConfig("timeoutMs", value)} />
               <ControlledField label="Temperature" value={config.temperature} onChange={(value) => updateConfig("temperature", value)} />
               <ControlledField label="Max tokens" value={config.maxTokens} onChange={(value) => updateConfig("maxTokens", value)} />
             </div>
             <div className="inline" style={{ gap: 10, marginTop: 16, flexWrap: "wrap" }}>
-              <button className="btn teal" onClick={loadModels} disabled={loadingModels || config.type === "CUSTOM"}><RefreshCw size={14} />{loadingModels ? "Loading models" : "Load models"}</button>
-              <button className="btn teal" onClick={testProvider}><Bot size={14} />Test provider</button>
               <button className="btn primary" onClick={saveProvider}><Save size={14} />Save configuration</button>
               {result ? <span className={`badge ${resultTone}`}>{result}</span> : null}
             </div>
-            {modelOptions.length ? (
-              <div className="muted" style={{ fontSize: 11.5, marginTop: 10 }}>{modelOptions.length} models loaded from {config.type}. Save to keep the selected model with this key.</div>
-            ) : null}
           </div>
         </div>
       </div>
@@ -904,16 +825,6 @@ function ControlledField({ label, value, onChange, type = "text" }: { label: str
     <div style={{ marginBottom: 16 }}>
       <label className="label" htmlFor={id}>{label}</label>
       <input id={id} className="input" value={value} onChange={(event) => onChange(event.target.value)} type={type} />
-    </div>
-  );
-}
-
-function ReadOnlyField({ label, value }: { label: string; value: string }) {
-  const id = label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-  return (
-    <div style={{ marginBottom: 16 }}>
-      <label className="label" htmlFor={id}>{label}</label>
-      <input id={id} className="input" value={value} readOnly />
     </div>
   );
 }

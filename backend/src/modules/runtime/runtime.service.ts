@@ -159,7 +159,12 @@ export async function simulateCall(
     createdAt: now()
   });
 
-  const nodeModel = typeof voicebotNode?.data.model === "string" && voicebotNode.data.model.trim() ? voicebotNode.data.model.trim() : aiProvider.defaultModel;
+  const nodeModel = typeof voicebotNode?.data.model === "string" && voicebotNode.data.model.trim()
+    ? voicebotNode.data.model.trim()
+    : aiProvider.defaultModel?.trim();
+  if (!nodeModel) {
+    throw new Error("Select an AI model in Flow Builder before running this voice bot flow.");
+  }
   const nodeKnowledgeIds = Array.isArray(voicebotNode?.data.knowledgeBaseIds)
     ? voicebotNode.data.knowledgeBaseIds.filter((item): item is string => typeof item === "string")
     : undefined;

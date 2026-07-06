@@ -179,7 +179,7 @@ const aiProviderSchema = z.object({
   type: z.enum(["OPENAI", "GEMINI", "CLAUDE", "CUSTOM"]),
   apiKey: z.string().optional(),
   baseUrl: z.string().optional(),
-  defaultModel: z.string().min(1),
+  defaultModel: z.string().min(1).optional(),
   configJson: z.record(z.unknown()).default({}),
   isActive: z.boolean().optional()
 });
@@ -320,6 +320,11 @@ app.post(
   asyncRoute(async (req, res) => {
     const provider = store.aiProviders.find((item) => item.id === req.params.id);
     if (!provider) return res.status(404).json({ message: "AI provider not found" });
+    const body = z.object({ model: z.string().min(1).optional() }).parse(req.body ?? {});
+    const model = body.model ?? provider.defaultModel;
+    if (!model) {
+      return res.status(400).json({ message: "Select a model in Flow Builder before testing this AI provider." });
+    }
     const temperature = typeof provider.configJson.temperature === "number" ? provider.configJson.temperature : 0.4;
     const maxTokens = typeof provider.configJson.maxTokens === "number" ? provider.configJson.maxTokens : 300;
     try {
@@ -327,7 +332,7 @@ app.post(
         systemPrompt: "ตอบภาษาไทยอย่างสุภาพและกระชับสำหรับระบบ voice bot",
         userText: "ทดสอบการเชื่อมต่อ AI provider",
         conversationHistory: [],
-        model: provider.defaultModel,
+        model,
         temperature,
         maxTokens
       });
@@ -336,7 +341,7 @@ app.post(
         mode: provider.type === "MOCK" ? "mock" : "live",
         latencyMs: response.latencyMs,
         providerId: provider.id,
-        model: provider.defaultModel,
+        model,
         message: provider.type === "MOCK" ? "Development provider generated a test response." : "AI provider generated a live test response.",
         sample: response.text
       });
