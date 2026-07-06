@@ -23,6 +23,13 @@ const port = Number(process.env.PORT ?? 3001);
 const store = await createStore();
 const isMockMode = () => process.env.MOCK_MODE === "true";
 
+function telephonyHealthStatus() {
+  const activeConnections = store.telephonyConnections.filter((connection) => connection.isActive);
+  if (activeConnections.some((connection) => ["connected", "registered"].includes(connection.status))) return "connected";
+  if (activeConnections.some((connection) => ["connection-failed", "registration-failed"].includes(connection.status))) return "connection-failed";
+  return store.asteriskConfigs[0]?.status ?? "not-tested";
+}
+
 app.use(helmet());
 const allowedOrigins = new Set([process.env.FRONTEND_URL ?? "http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5173"]);
 app.use(cors({
@@ -68,7 +75,7 @@ app.get("/api/system/health", (_req, res) => {
       api: "ok",
       aiProvider: store.aiProviders.some((provider) => provider.isActive && provider.type !== "MOCK" && provider.encryptedApiKey) ? "configured" : "missing-credential",
       dialogflow: store.dialogflowConfigs.some((config) => config.isActive && config.encryptedServiceAccountJson) ? "configured" : "missing-credential",
-      asterisk: store.asteriskConfigs[0]?.status ?? "not-tested"
+      asterisk: telephonyHealthStatus()
     }
   });
 });
@@ -133,7 +140,7 @@ app.get("/api/dashboard/summary", requireAuth, (_req, res) => {
     providerHealth: {
       ai: store.aiProviders.some((provider) => provider.isActive && provider.type !== "MOCK" && provider.encryptedApiKey) ? "configured" : "missing-credential",
       dialogflow: store.dialogflowConfigs.some((config) => config.isActive && config.encryptedServiceAccountJson) ? "configured" : "missing-credential",
-      asterisk: store.asteriskConfigs[0]?.status ?? "not-tested"
+      asterisk: telephonyHealthStatus()
     },
     latestSessions: store.sessions.slice(0, 8)
   });
