@@ -12,7 +12,7 @@ import { logger } from "./common/logger/logger.js";
 import { createAiProviderAdapter, getAiProviderBaseUrl, listAiProviderModels } from "./modules/ai-providers/adapters.js";
 import { changePassword, login, publicUser } from "./modules/auth/auth.service.js";
 import { validateFlow } from "./modules/flows/validation.js";
-import { chunkText, extractFileText, loadDatabaseText, scrapeWebsiteText } from "./modules/knowledge/knowledge.service.js";
+import { chunkText, crawlWebsiteText, extractFileText, loadDatabaseText } from "./modules/knowledge/knowledge.service.js";
 import { simulateCall } from "./modules/runtime/runtime.service.js";
 import { registerSipConnection } from "./modules/telephony/sip-registration.js";
 import { startSipVoiceBot } from "./modules/telephony/sip-voice-bridge.js";
@@ -598,6 +598,12 @@ async function updateKnowledgeBaseChunks(id: string, sourceConfig: Record<string
   if (!kb) throw new Error("Knowledge base not found");
   kb.sourceConfig = sourceConfig;
   kb.chunks = chunkText(text, sourceRef);
+  kb.vectorIndex = {
+    provider: "local-hash-embedding",
+    dimensions: 64,
+    chunkCount: kb.chunks.length,
+    updatedAt: new Date().toISOString()
+  };
   kb.status = kb.chunks.length ? "ready" : "failed";
   kb.errorMessage = kb.chunks.length ? undefined : "No text content was extracted.";
   kb.updatedAt = new Date().toISOString();
@@ -620,8 +626,8 @@ app.post(
   requireAuth,
   asyncRoute(async (req, res) => {
     const body = z.object({ url: z.string().url() }).parse(req.body);
-    const text = await scrapeWebsiteText(body.url);
-    const kb = await updateKnowledgeBaseChunks(String(req.params.id), { url: body.url }, text, body.url);
+    const crawled = await crawlWebsiteText(body.url);
+    const kb = await updateKnowledgeBaseChunks(String(req.params.id), { url: body.url, crawl: "same-origin", pages: crawled.pages }, crawled.text, body.url);
     res.json(kb);
   })
 );

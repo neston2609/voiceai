@@ -110,6 +110,7 @@ export interface KnowledgeChunk {
   id: string;
   text: string;
   sourceRef?: string;
+  embedding?: number[];
   createdAt: string;
 }
 
@@ -121,6 +122,12 @@ export interface KnowledgeBase {
   sourceType: "TEXT" | "FILE" | "DATABASE" | "WEBSITE";
   sourceConfig: Record<string, unknown>;
   chunks: KnowledgeChunk[];
+  vectorIndex?: {
+    provider: string;
+    dimensions: number;
+    chunkCount: number;
+    updatedAt: string;
+  };
   status: "empty" | "ready" | "failed";
   errorMessage?: string;
   createdAt: string;

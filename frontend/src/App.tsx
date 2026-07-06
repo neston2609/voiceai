@@ -11,7 +11,7 @@ import { LoginPage } from "./pages/LoginPage";
 import { SimulateCallPage } from "./pages/SimulateCallPage";
 import { SessionsPage } from "./pages/SessionsPage";
 import { CallDetailPage } from "./pages/CallDetailPage";
-import { AsteriskPage, DialogflowPage, GenericAdminPage, PromptsPage, ProvidersPage, UsersPage } from "./pages/ConfigurationPages";
+import { AsteriskPage, DialogflowPage, GenericAdminPage, KnowledgeBasesPage, PromptsPage, ProvidersPage, UsersPage } from "./pages/ConfigurationPages";
 
 const queryClient = new QueryClient();
 const FlowBuilderPage = lazy(() => import("./pages/FlowBuilderPage").then((module) => ({ default: module.FlowBuilderPage })));
@@ -25,6 +25,7 @@ function ScreenRouter() {
   if (screen === "sessions") return <SessionsPage />;
   if (screen === "detail") return <CallDetailPage />;
   if (screen === "providers") return <ProvidersPage />;
+  if (screen === "knowledge") return <KnowledgeBasesPage />;
   if (screen === "prompts") return <PromptsPage />;
   if (screen === "dialogflow") return <DialogflowPage />;
   if (screen === "asterisk") return <AsteriskPage />;

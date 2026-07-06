@@ -9,6 +9,7 @@ export type Screen =
   | "sessions"
   | "detail"
   | "providers"
+  | "knowledge"
   | "prompts"
   | "dialogflow"
   | "asterisk"

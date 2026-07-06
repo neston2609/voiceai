@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { FileText, Mic, Phone, Plus, Save, Shield, Trash2, Upload } from "lucide-react";
+import { Database, FileText, Globe2, Mic, Phone, Plus, Save, Shield, Trash2, Upload } from "lucide-react";
 import { api } from "../api/client";
 import { Badge } from "../components/Badge";
 import { users } from "../data/mock";
@@ -195,6 +195,186 @@ export function ProvidersPage() {
   );
 }
 
+export function KnowledgeBasesPage() {
+  type SourceType = "TEXT" | "FILE" | "DATABASE" | "WEBSITE";
+  type KnowledgeBase = {
+    id: string;
+    name: string;
+    description?: string;
+    sourceType: SourceType;
+    sourceConfig: Record<string, unknown>;
+    status: "empty" | "ready" | "failed";
+    chunks: Array<{ id: string; embedding?: number[]; sourceRef?: string }>;
+    vectorIndex?: { provider: string; dimensions: number; chunkCount: number; updatedAt: string };
+    errorMessage?: string;
+    updatedAt: string;
+  };
+
+  const [items, setItems] = useState<KnowledgeBase[]>([]);
+  const [draft, setDraft] = useState({
+    name: "Support KB",
+    description: "",
+    sourceType: "FILE" as SourceType,
+    text: "",
+    url: "",
+    connectionString: "",
+    table: "",
+    query: "",
+    limit: "100"
+  });
+  const [result, setResult] = useState("");
+  const [resultTone, setResultTone] = useState<"green" | "amber" | "red">("green");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void loadKnowledgeBases();
+  }, []);
+
+  async function loadKnowledgeBases() {
+    try {
+      const { data } = await api.get<KnowledgeBase[]>("/knowledge-bases");
+      setItems(data);
+    } catch (error: unknown) {
+      setResultTone("red");
+      setResult(getApiMessage(error, "Unable to load knowledge bases"));
+    }
+  }
+
+  function updateDraft(field: keyof typeof draft, value: string) {
+    setDraft((current) => ({ ...current, [field]: value }));
+  }
+
+  async function createKnowledgeBase(file?: File) {
+    try {
+      setBusy(true);
+      setResult("");
+      const { data: kb } = await api.post("/knowledge-bases", {
+        name: draft.name,
+        description: draft.description || undefined,
+        sourceType: draft.sourceType
+      });
+      if (draft.sourceType === "TEXT") {
+        await api.post(`/knowledge-bases/${kb.id}/ingest-text`, { text: draft.text });
+      } else if (draft.sourceType === "WEBSITE") {
+        await api.post(`/knowledge-bases/${kb.id}/ingest-url`, { url: draft.url });
+      } else if (draft.sourceType === "DATABASE") {
+        await api.post(`/knowledge-bases/${kb.id}/ingest-database`, {
+          connectionString: draft.connectionString,
+          table: draft.table || undefined,
+          query: draft.query || undefined,
+          limit: Number(draft.limit || 100)
+        });
+      } else {
+        if (!file) throw new Error("Choose a file to upload.");
+        const base64 = await fileToBase64(file);
+        await api.post(`/knowledge-bases/${kb.id}/ingest-file`, { fileName: file.name, mimeType: file.type, base64 });
+      }
+      await loadKnowledgeBases();
+      setResultTone("green");
+      setResult(`Knowledge base ${draft.name} vectorized`);
+    } catch (error: unknown) {
+      setResultTone("red");
+      setResult(error instanceof Error ? error.message : getApiMessage(error, "Could not create knowledge base"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteKnowledgeBase(id: string, name: string) {
+    if (!window.confirm(`Delete knowledge base "${name}"?`)) return;
+    try {
+      await api.delete(`/knowledge-bases/${id}`);
+      await loadKnowledgeBases();
+      setResultTone("green");
+      setResult(`Deleted ${name}`);
+    } catch (error: unknown) {
+      setResultTone("red");
+      setResult(getApiMessage(error, "Could not delete knowledge base"));
+    }
+  }
+
+  return (
+    <div className="page" style={{ maxWidth: 1180 }}>
+      <div className="panel inline" style={{ gap: 8, padding: "11px 15px", marginBottom: 16, background: "var(--green50)" }}>
+        <Badge tone="green">Vector KB</Badge>
+        <span style={{ fontSize: 12.5, color: "#0B5F32" }}>Upload files, crawl websites, or connect a database. All extracted chunks are stored with vectors for RAG.</span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "360px 1fr", gap: 16 }}>
+        <div className="panel" style={{ height: "fit-content" }}>
+          <div className="panel-header inline" style={{ gap: 10 }}>
+            <span style={{ width: 34, height: 34, borderRadius: 8, background: "var(--indigo50)", color: "var(--indigo)", display: "grid", placeItems: "center" }}><Database size={18} /></span>
+            <div><div style={{ fontWeight: 600, fontSize: 14 }}>Add knowledge base</div><div className="muted" style={{ fontSize: 11.5 }}>Each KB becomes a searchable vector index</div></div>
+          </div>
+          <div style={{ padding: 18 }}>
+            <ControlledField label="KB name" value={draft.name} onChange={(value) => updateDraft("name", value)} />
+            <ControlledField label="Description" value={draft.description} onChange={(value) => updateDraft("description", value)} />
+            <SelectField label="Source type" value={draft.sourceType} onChange={(value) => updateDraft("sourceType", value)} options={["FILE", "TEXT", "DATABASE", "WEBSITE"]} />
+            {draft.sourceType === "TEXT" ? (
+              <>
+                <label className="label" htmlFor="kb-text">Knowledge text</label>
+                <textarea id="kb-text" className="textarea mono" rows={7} value={draft.text} onChange={(event) => updateDraft("text", event.target.value)} />
+                <button className="btn primary" onClick={() => createKnowledgeBase()} disabled={busy} style={{ marginTop: 12 }}><Save size={14} />{busy ? "Vectorizing" : "Create KB"}</button>
+              </>
+            ) : null}
+            {draft.sourceType === "FILE" ? (
+              <>
+                <label className="label" htmlFor="kb-file">Upload file</label>
+                <input id="kb-file" className="input" type="file" accept=".pdf,.docx,.xlsx,.xls,.csv,.txt,.md,text/*,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => createKnowledgeBase(event.target.files?.[0])} disabled={busy} />
+                <div className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>PDF, Word, Excel, CSV, text, and best-effort text extraction for other files.</div>
+              </>
+            ) : null}
+            {draft.sourceType === "WEBSITE" ? (
+              <>
+                <ControlledField label="Website URL" value={draft.url} onChange={(value) => updateDraft("url", value)} />
+                <button className="btn primary" onClick={() => createKnowledgeBase()} disabled={busy}><Globe2 size={14} />{busy ? "Crawling" : "Crawl website"}</button>
+              </>
+            ) : null}
+            {draft.sourceType === "DATABASE" ? (
+              <>
+                <ControlledField label="Connection string" value={draft.connectionString} onChange={(value) => updateDraft("connectionString", value)} type="password" />
+                <ControlledField label="Table" value={draft.table} onChange={(value) => updateDraft("table", value)} />
+                <label className="label" htmlFor="kb-query">Query</label>
+                <textarea id="kb-query" className="textarea mono" rows={4} value={draft.query} onChange={(event) => updateDraft("query", event.target.value)} placeholder="optional SELECT query" />
+                <ControlledField label="Row limit" value={draft.limit} onChange={(value) => updateDraft("limit", value)} />
+                <button className="btn primary" onClick={() => createKnowledgeBase()} disabled={busy}><Database size={14} />{busy ? "Indexing" : "Connect and index"}</button>
+              </>
+            ) : null}
+            {result ? <div className={`badge ${resultTone}`} style={{ marginTop: 12 }}>{result}</div> : null}
+          </div>
+        </div>
+        <div className="panel" style={{ overflow: "hidden" }}>
+          <div className="panel-header row-between">
+            <span style={{ fontWeight: 600, fontSize: 13 }}>Knowledge bases</span>
+            <Badge tone="indigo">{items.length} total</Badge>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: 12, padding: 16 }}>
+            {items.map((kb) => (
+              <div key={kb.id} className="panel" style={{ padding: 14, background: "var(--surface2)" }}>
+                <div className="row-between" style={{ alignItems: "flex-start", gap: 10 }}>
+                  <div>
+                    <div style={{ fontSize: 13.5, fontWeight: 700 }}>{kb.name}</div>
+                    <div className="muted" style={{ fontSize: 11 }}>{kb.sourceType} / {kb.vectorIndex?.provider ?? "not-vectorized"}</div>
+                  </div>
+                  <Badge tone={kb.status === "ready" ? "green" : kb.status === "failed" ? "red" : "amber"}>{kb.status}</Badge>
+                </div>
+                {kb.description ? <div className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>{kb.description}</div> : null}
+                <div className="inline" style={{ gap: 7, marginTop: 12, flexWrap: "wrap" }}>
+                  <Badge tone="gray">{kb.chunks.length} chunks</Badge>
+                  <Badge tone="gray">{kb.vectorIndex?.dimensions ?? 0} dims</Badge>
+                  <Badge tone="gray">{kb.sourceConfig.pages && Array.isArray(kb.sourceConfig.pages) ? `${kb.sourceConfig.pages.length} pages` : "1 source"}</Badge>
+                </div>
+                {kb.errorMessage ? <div className="badge red" style={{ marginTop: 10 }}>{kb.errorMessage}</div> : null}
+                <button className="btn danger" onClick={() => deleteKnowledgeBase(kb.id, kb.name)} style={{ marginTop: 12 }}><Trash2 size={14} />Delete</button>
+              </div>
+            ))}
+            {items.length === 0 ? <div className="muted" style={{ fontSize: 12 }}>No knowledge bases yet.</div> : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function PromptsPage() {
   type PromptTemplate = {
     id: string;
@@ -221,7 +401,7 @@ export function PromptsPage() {
 
   const [items, setItems] = useState<PromptTemplate[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
-  const [kbDraft, setKbDraft] = useState({ name: "Support KB", sourceType: "TEXT", text: "", url: "", connectionString: "", table: "", query: "" });
+  const [kbToAdd, setKbToAdd] = useState("");
   const [form, setForm] = useState<PromptForm>(emptyPrompt());
   const [result, setResult] = useState("");
   const [resultTone, setResultTone] = useState<"green" | "amber" | "red">("green");
@@ -319,39 +499,18 @@ export function PromptsPage() {
     }
   }
 
-  function toggleKnowledgeBase(id: string) {
+  function addKnowledgeBase() {
+    if (!kbToAdd) return;
     setForm((current) => {
       const existing = new Set(current.knowledgeBaseIds ?? []);
-      if (existing.has(id)) existing.delete(id); else existing.add(id);
+      existing.add(kbToAdd);
       return { ...current, knowledgeBaseIds: Array.from(existing) };
     });
+    setKbToAdd("");
   }
 
-  async function createAndIngestKnowledgeBase(file?: File) {
-    try {
-      const { data: kb } = await api.post("/knowledge-bases", { name: kbDraft.name, sourceType: kbDraft.sourceType });
-      if (kbDraft.sourceType === "TEXT") {
-        await api.post(`/knowledge-bases/${kb.id}/ingest-text`, { text: kbDraft.text });
-      } else if (kbDraft.sourceType === "WEBSITE") {
-        await api.post(`/knowledge-bases/${kb.id}/ingest-url`, { url: kbDraft.url });
-      } else if (kbDraft.sourceType === "DATABASE") {
-        await api.post(`/knowledge-bases/${kb.id}/ingest-database`, {
-          connectionString: kbDraft.connectionString,
-          table: kbDraft.table || undefined,
-          query: kbDraft.query || undefined
-        });
-      } else if (file) {
-        const base64 = await fileToBase64(file);
-        await api.post(`/knowledge-bases/${kb.id}/ingest-file`, { fileName: file.name, mimeType: file.type, base64 });
-      }
-      await loadKnowledgeBases();
-      setForm((current) => ({ ...current, knowledgeBaseIds: [...(current.knowledgeBaseIds ?? []), kb.id] }));
-      setResultTone("green");
-      setResult(`Knowledge base ${kbDraft.name} ingested`);
-    } catch (error: unknown) {
-      setResultTone("red");
-      setResult(getApiMessage(error, "Could not ingest knowledge base"));
-    }
+  function removeKnowledgeBase(id: string) {
+    setForm((current) => ({ ...current, knowledgeBaseIds: (current.knowledgeBaseIds ?? []).filter((item) => item !== id) }));
   }
 
   return (
@@ -405,35 +564,32 @@ export function PromptsPage() {
                 <div style={{ fontWeight: 600, fontSize: 13 }}>RAG / Knowledge bases</div>
                 <Badge tone="indigo">{form.knowledgeBaseIds?.length ?? 0} selected</Badge>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(210px,1fr))", gap: 8, marginBottom: 12 }}>
-                {knowledgeBases.map((kb) => (
-                  <label key={kb.id} className="panel inline" style={{ gap: 8, padding: 10, background: "var(--surface)" }}>
-                    <input type="checkbox" checked={(form.knowledgeBaseIds ?? []).includes(kb.id)} onChange={() => toggleKnowledgeBase(kb.id)} />
-                    <span style={{ flex: 1, fontSize: 12.5, fontWeight: 600 }}>{kb.name}</span>
-                    <Badge tone={kb.status === "ready" ? "green" : kb.status === "failed" ? "red" : "amber"}>{kb.chunks.length}</Badge>
-                  </label>
-                ))}
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 140px", gap: 10 }}>
-                <input className="input" value={kbDraft.name} onChange={(event) => setKbDraft((current) => ({ ...current, name: event.target.value }))} placeholder="KB name" />
-                <select className="input" value={kbDraft.sourceType} onChange={(event) => setKbDraft((current) => ({ ...current, sourceType: event.target.value }))}>
-                  <option value="TEXT">Text</option>
-                  <option value="FILE">PDF / Word / Text</option>
-                  <option value="WEBSITE">Website</option>
-                  <option value="DATABASE">Database</option>
-                </select>
-              </div>
-              {kbDraft.sourceType === "TEXT" ? <textarea className="textarea mono" rows={4} value={kbDraft.text} onChange={(event) => setKbDraft((current) => ({ ...current, text: event.target.value }))} placeholder="Paste knowledge text" style={{ marginTop: 10 }} /> : null}
-              {kbDraft.sourceType === "WEBSITE" ? <input className="input" value={kbDraft.url} onChange={(event) => setKbDraft((current) => ({ ...current, url: event.target.value }))} placeholder="https://example.com/page" style={{ marginTop: 10 }} /> : null}
-              {kbDraft.sourceType === "DATABASE" ? (
-                <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
-                  <input className="input" value={kbDraft.connectionString} onChange={(event) => setKbDraft((current) => ({ ...current, connectionString: event.target.value }))} placeholder="postgres://user:pass@host:5432/db" />
-                  <input className="input" value={kbDraft.table} onChange={(event) => setKbDraft((current) => ({ ...current, table: event.target.value }))} placeholder="schema.table or leave blank when using query" />
-                  <textarea className="textarea mono" rows={3} value={kbDraft.query} onChange={(event) => setKbDraft((current) => ({ ...current, query: event.target.value }))} placeholder="optional SELECT query" />
+              <div className="inline" style={{ gap: 8, alignItems: "flex-end", marginBottom: 12 }}>
+                <div style={{ flex: 1 }}>
+                  <label className="label" htmlFor="prompt-kb-add">Add KB</label>
+                  <select id="prompt-kb-add" className="input" value={kbToAdd} onChange={(event) => setKbToAdd(event.target.value)}>
+                    <option value="">Select a knowledge base</option>
+                    {knowledgeBases.filter((kb) => !(form.knowledgeBaseIds ?? []).includes(kb.id)).map((kb) => (
+                      <option key={kb.id} value={kb.id}>{kb.name} / {kb.status} / {kb.chunks.length} chunks</option>
+                    ))}
+                  </select>
                 </div>
-              ) : null}
-              <div className="inline" style={{ gap: 10, marginTop: 10 }}>
-                {kbDraft.sourceType === "FILE" ? <input className="input" type="file" accept=".txt,.md,.pdf,.docx,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => createAndIngestKnowledgeBase(event.target.files?.[0])} /> : <button className="btn teal" onClick={() => createAndIngestKnowledgeBase()}>Ingest KB</button>}
+                <button className="btn teal" onClick={addKnowledgeBase}><Plus size={14} />Add</button>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 8 }}>
+                {(form.knowledgeBaseIds ?? []).map((id) => {
+                  const kb = knowledgeBases.find((item) => item.id === id);
+                  return (
+                    <div key={id} className="panel row-between" style={{ gap: 8, padding: 10, background: "var(--surface)" }}>
+                      <div>
+                        <div style={{ fontSize: 12.5, fontWeight: 600 }}>{kb?.name ?? id}</div>
+                        <div className="muted" style={{ fontSize: 10.5 }}>{kb ? `${kb.sourceType} / ${kb.chunks.length} chunks` : "missing"}</div>
+                      </div>
+                      <button className="btn" onClick={() => removeKnowledgeBase(id)} title="Remove KB"><Trash2 size={13} /></button>
+                    </div>
+                  );
+                })}
+                {(form.knowledgeBaseIds ?? []).length === 0 ? <div className="muted" style={{ fontSize: 11.5 }}>No KB selected for this prompt.</div> : null}
               </div>
             </div>
             <div className="inline" style={{ gap: 10, marginTop: 16, flexWrap: "wrap" }}>

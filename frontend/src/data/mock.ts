@@ -16,6 +16,7 @@ import {
   Settings,
   Shield,
   Sparkles,
+  BookOpen,
   Users,
   Wrench,
   type LucideIcon
@@ -37,6 +38,7 @@ export const navGroups: Array<{ title: string; items: Array<{ id: Screen; label:
     title: "AI configuration",
     items: [
       { id: "providers", label: "AI providers", icon: Sparkles },
+      { id: "knowledge", label: "Knowledge bases", icon: BookOpen },
       { id: "prompts", label: "Prompts", icon: MessageSquare }
     ]
   },
@@ -66,6 +68,7 @@ export const pageMeta: Record<Screen, [string, string]> = {
   sessions: ["Operations", "Call sessions"],
   detail: ["Operations", "Call detail"],
   providers: ["AI configuration", "AI providers"],
+  knowledge: ["AI configuration", "Knowledge bases"],
   prompts: ["AI configuration", "Prompts"],
   dialogflow: ["Voice configuration", "Dialogflow"],
   asterisk: ["Voice configuration", "FreePBX / Asterisk"],
